@@ -1,0 +1,6 @@
+pandas
+geopandas
+numpy
+scikit-learn
+matplotlib
+contextily

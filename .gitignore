@@ -1,0 +1,17 @@
+# Data and artifacts (keep repo lean; datasets are large and may include symlinks)
+dataset/
+data/
+v1/dataset/
+v1/data/
+v2/dataset/
+v2/data/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Node modules (if any)
+node_modules/
+
+# Vite/TS build outputs
+dist/
