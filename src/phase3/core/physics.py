@@ -52,7 +52,6 @@ def step_kernel(
     返回 escaped_indices 列表
     """
     N = pos.shape[0]
-    escaped = []
     for i in numba.prange(N):
         if not active[i]:
             continue
@@ -87,7 +86,6 @@ def step_kernel(
             pos[i, 1] = field.shape[2] - 1
 
         # 到达判定：当前 sdf 小于阈值
-        if sy <= respawn_radius:
-            escaped.append(i)
+        if respawn_radius > 0.0 and sy <= respawn_radius:
             active[i] = False
-    return escaped
+    return

@@ -12,16 +12,16 @@ FIELD_BASELINE_PATH = BASE_DIR / "data" / "processed" / "field_baseline.npy"
 
 # 输出
 OUTPUT_DIR = BASE_DIR / "data" / "output"
-TRAJ_PATH = OUTPUT_DIR / "trajectories.h5"
+TRAJ_PATH = OUTPUT_DIR / "trajectories.npz"
 
 # 物理/模拟参数
 DT = 0.5
-MAX_STEPS = 2000
+MAX_STEPS = 5000
 NOISE_SIGMA = 0.2
 TAU = 1.0
 V0 = 1.0
-AGENT_COUNT = 20000
-RESPAWN_RADIUS = 2.0  # 到达阈值
+AGENT_COUNT = 10000
+RESPAWN_RADIUS = -1.0  # 此处设为负数避免提前终止，保持全程活跃
 
 # 缓冲写入
 BUFFER_STEPS = 1000
