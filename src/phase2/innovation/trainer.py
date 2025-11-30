@@ -70,6 +70,9 @@ class ScoreDataset(Dataset):
     def __len__(self):
         return self.n_samples
 
+    def reset_rng(self, seed: int):
+        self.rng = np.random.default_rng(seed)
+
     def __getitem__(self, idx):
         y0, x0 = _sample_indices_from_density(self.density, self.rng)
         noise = self.rng.normal(loc=0.0, scale=self.sigma, size=2)
@@ -104,15 +107,16 @@ def _sample_pred_at_coords(pred: torch.Tensor, coords: torch.Tensor) -> torch.Te
 class TrainConfig:
     batch_size: int = 8
     lr: float = 1e-3
-    num_steps: int = 2000
-    sigma: float = 4.0
-    query_sigma: float = 2.0
-    log_interval: int = 100
+    num_steps: int = 5000
+    sigma: float = 3.5
+    query_sigma: float = 1.5
+    log_interval: int = 200
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     num_workers: int = 4
     pin_memory: bool = True
     base_channels: int = 32
     amp: bool = True  # 混合精度加速
+    seed: int = 42
 
 
 def train_dsm(
@@ -140,6 +144,7 @@ def train_dsm(
         pin_memory=cfg.pin_memory,
         drop_last=True,
         persistent_workers=cfg.num_workers > 0,
+        worker_init_fn=(lambda worker_id: dataset.reset_rng(cfg.seed + worker_id)) if cfg.num_workers > 0 else None,
     )
 
     device = torch.device(cfg.device)
@@ -182,5 +187,44 @@ def train_dsm(
     return model
 
 
+def _parse_cli_args():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train score UNet (DSM).")
+    parser.add_argument("--density", type=str, default=None, help="path to target_density.npy")
+    parser.add_argument("--mask", type=str, default=None, help="path to walkable_mask.npy")
+    parser.add_argument("--out", type=str, default=None, help="output model path")
+    parser.add_argument("--batch", type=int, default=128)
+    parser.add_argument("--steps", type=int, default=5000)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--sigma", type=float, default=3.5)
+    parser.add_argument("--query_sigma", type=float, default=1.5)
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--base_channels", type=int, default=32)
+    parser.add_argument("--no_amp", action="store_true", help="disable AMP")
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
+    cfg = TrainConfig(
+        batch_size=args.batch,
+        lr=args.lr,
+        num_steps=args.steps,
+        sigma=args.sigma,
+        query_sigma=args.query_sigma,
+        device=args.device,
+        num_workers=args.workers,
+        base_channels=args.base_channels,
+        amp=not args.no_amp,
+        seed=args.seed,
+    )
+    return args, cfg
+
+
 if __name__ == "__main__":
-    train_dsm()
+    args, cfg = _parse_cli_args()
+    train_dsm(
+        density_path=args.density,
+        mask_path=args.mask,
+        model_out=args.out,
+        cfg=cfg,
+    )

@@ -22,6 +22,8 @@ GRAD_BASELINE_PATH = OUTPUT_DIR / "grad_baseline.npz"
 SCORE_BASELINE_PATH = OUTPUT_DIR / "score_baseline.npz"
 BASELINE_VIZ_PATH = OUTPUT_DIR / "baseline_field.png"
 INNOVATION_MODEL_PATH = OUTPUT_DIR / "score_unet.pt"
+INNOVATION_SAMPLES_PATH = OUTPUT_DIR / "score_samples.npz"
+INNOVATION_VIZ_PATH = OUTPUT_DIR / "score_field_innovation.png"
 
 # 栅格参数
 GRID_RES_M = 100.0          # 栅格分辨率（米）

@@ -63,6 +63,47 @@ def plot_field(
     return out_path
 
 
+def plot_score_samples(
+    background: np.ndarray,
+    mask: np.ndarray,
+    coords: np.ndarray,
+    vecs: np.ndarray,
+    out_path: Path | str = "score_field.png",
+    title: str = "Score Field (samples)",
+    scale: float = 30.0,
+):
+    """
+    使用稀疏采样的向量进行可视化，背景可用 density 或 baseline 场。
+    """
+    bg = np.asarray(background)
+    mask = np.asarray(mask)
+    coords = np.asarray(coords)
+    vecs = np.asarray(vecs)
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.imshow(bg, cmap="inferno", origin="lower", alpha=0.85)
+    ax.imshow(np.where(mask > 0, 0.0, 1.0), cmap="gray", origin="lower", alpha=0.2)
+    ax.quiver(
+        coords[:, 1],
+        coords[:, 0],
+        vecs[:, 1],
+        vecs[:, 0],
+        color="cyan",
+        alpha=0.8,
+        scale=scale,
+        width=0.003,
+    )
+    ax.set_title(title)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
 if __name__ == "__main__":
     # 便于快速手动运行
     import argparse
