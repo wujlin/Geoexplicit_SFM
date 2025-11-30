@@ -16,28 +16,59 @@
 # Phase 4: Generative Motion Modeling (Diffusion Policy)
 
 ## 1. 项目目标 (Objective)
-**当前阶段**: Phase 4 - 生成式行为克隆 (Generative Behavioral Cloning)
+**当前阶段**: Phase 4 - 生成式行为克隆 (Diffusion Policy)
 
 **核心理念**:
-Phase 3 的物理引擎是一个“高精度的规则生成器”。
-Phase 4 的目标是训练一个 **Diffusion Policy**，从 Phase 3 生成的数百万条轨迹数据中学习运动规律 ($State \to Action$)。
-它不再是机械地执行 $F=ma$，而是学会了**“在当前环境下，应该以什么样的概率分布采取行动”**。这是通往 **Sim-to-Real** 和 **多模态导航** 的关键一步。
+- 以 Phase 3 合成的轨迹数据（`trajectories.h5`）为燃料，学习条件分布 $p_\theta(A | O)$。
+- 通过扩散去噪网络 (UNet1D) 预测未来动作分布，实现多模态、概率化的导航策略。
 
 **输入**: Phase 3 产出的 `trajectories.h5` (大规模合成轨迹)。
-**输出**: 一个预训练好的扩散策略模型 (Diffusion Model)，能够在一个从未见过的初始位置，自主规划出前往 CBD 的合理路径。
+**输出**: 预训练好的扩散策略模型，可在新初始位置下生成合理的动作序列。
 
 ---
 
-## 2. 核心数学逻辑 (The Math)
+## 2. 核心模块与代码结构
 
-我们将导航问题建模为 **条件扩散过程 (Conditional Diffusion Process)**。
+```
+src/phase4/
+├── config.py                # 数据路径、窗口长度等超参
+├── data/
+│   ├── dataset.py           # HDF5 滑窗 Dataset，obs=2帧(pos,vel)，action=未来8帧vel
+│   └── normalizer.py        # MinMax/Z-Score 归一化
+├── model/
+│   └── unet1d.py            # 条件 1D UNet (timestep + global cond)
+├── diffusion/
+│   └── scheduler.py         # DDPM/可选 DDIM 调度
+├── train.py                 # 训练脚本，EMA 平滑 + MSE 噪声预测
+└── inference.py             # 推理/MPC：预测未来8步，执行1步
+```
 
-* **Observation ($O$)**: 智能体的状态（位置、速度）+ 环境信息（局部地图特征、目标方向）。
-* **Action ($A$)**: 智能体的下一步动作（速度增量 $\Delta v$ 或 加速度）。
-* **模型目标**: 学习条件分布 $p_\theta(A | O)$。
+## 3. 训练与推理
 
-训练过程（DDPM）：
-1.  从数据集中采样一个真实的动作 $A_0$。
+### 训练
+```
+cd e:\newdesktop\HKUST\GeoExplicit_SFM\v2
+python src/phase4/train.py --epochs 100 --batch_size 256
+```
+关键点：
+- 使用 `TrajectorySlidingWindow` 读取 `(obs, action)`；obs 包含过去2帧位置+速度，action 为未来8帧速度。
+- `ActionNormalizer` 默认 MinMax 到 [-1,1]。
+- 调度器 `DDPMScheduler` 管理扩散/去噪；UNet1D 条件输入包含 timestep embedding + 全局 cond。
+- EMA 平滑权重。
+
+### 推理
+```
+python src/phase4/inference.py --num_agents 20 --max_steps 500
+```
+关键点：
+- MPC 风格：预测 8 步，执行 1 步再滚动。
+- 支持 DDPM/可选 DDIM 采样加速。
+
+## 4. 设计要点
+- Observation: 过去 2 帧的 (pos, vel) → obs_dim=4；Action: 未来 8 帧 vel。
+- Conditional UNet1D：timestep sinusoidal embedding + 全局条件（观测投影）。
+- 归一化：MinMax 到 [-1,1]（`normalizer.py`）。
+- 调度：`scheduler.py` 提供 beta schedule、前向/反向公式。
 2.  加入高斯噪声 $\epsilon \sim \mathcal{N}(0, I)$ 得到 $A_k$ (第 $k$ 步加噪)。
 3.  训练神经网络预测噪声：$\epsilon_\theta(A_k, k, O) \approx \epsilon$。
 

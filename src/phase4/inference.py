@@ -20,14 +20,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-# 添加项目根目录到路径
+# 添加项目根目录/src 到路径
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / "src"
+sys.path.insert(0, str(SRC_ROOT))
 
-from src.phase4 import config
-from src.phase4.data.normalizer import ActionNormalizer
-from src.phase4.diffusion.scheduler import DDPMScheduler, DDIMScheduler
-from src.phase4.model.unet1d import UNet1D
+from phase4 import config
+from phase4.data.normalizer import ActionNormalizer
+from phase4.diffusion.scheduler import DDPMScheduler, DDIMScheduler
+from phase4.model.unet1d import UNet1D
 
 # 设置日志
 logging.basicConfig(

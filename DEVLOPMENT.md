@@ -55,3 +55,13 @@
 - 边界梯度污染：中心差分受 mask 影响，改用最小邻居距离方向。
 - 当前指标（1px 路网，2000步）：到达率 ~45.7%，平均位移 ~62.4 像素，on-road ~50%，速度均值 ~2.3 px/frame。
 - 后续可选：膨胀 walkable mask、调整恢复力、使用 8 邻域导航。
+
+# Phase 4 摘要（Diffusion Policy）
+- 目标：基于 Phase3 轨迹 (`data/output/trajectories.h5`) 训练条件扩散策略。
+- 目录：`src/phase4/`（config、data/{dataset,normalizer}、model/unet1d、diffusion/scheduler、train.py、inference.py）。
+- Dataset：`TrajectorySlidingWindow`，obs=过去2帧位置+速度，action=未来8帧速度。
+- 模型：条件 1D UNet（timestep embedding + 全局条件），噪声预测 MSE，EMA 平滑。
+- 调度：`scheduler.py` 实现 DDPM/可选 DDIM。
+- 使用：
+  - 训练：`python src/phase4/train.py --epochs 100 --batch_size 256`
+  - 推理：`python src/phase4/inference.py --num_agents 20 --max_steps 500`（MPC：预测8步，执行1步）
