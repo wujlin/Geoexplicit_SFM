@@ -54,7 +54,7 @@ def step_kernel(
     """
     N = pos.shape[0]
     H, W = sdf.shape
-    WALL_STIFFNESS = 20.0
+    WALL_STIFFNESS = 5.0
     for i in numba.prange(N):
         if not active[i]:
             continue
@@ -75,8 +75,9 @@ def step_kernel(
         dist = sdf[yi, xi]
         f_wall_y = 0.0
         f_wall_x = 0.0
-        if dist < 3.0:
-            strength = WALL_STIFFNESS * (3.0 - dist)
+        # 收紧触发阈值，路宽约1px，仅在接近掉出时施加斥力
+        if dist < 0.8:
+            strength = WALL_STIFFNESS * (0.8 - dist)
             f_wall_y = grad_y * strength
             f_wall_x = grad_x * strength
 
