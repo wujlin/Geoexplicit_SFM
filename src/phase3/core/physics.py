@@ -9,30 +9,15 @@ def bilinear_sample(field, y, x):
     """
     field: (2, H, W)
     y, x: scalar (float)
-    返回 (2,) 双线性插值
+    返回 (2,) 最近邻采样（不使用双线性插值，因为导航场在窄道路上方向变化剧烈）
     """
     h, w = field.shape[1], field.shape[2]
-    # 边界clamp
-    y = max(0.0, min(y, h - 1.001))
-    x = max(0.0, min(x, w - 1.001))
-    
-    y0 = int(np.floor(y))
-    x0 = int(np.floor(x))
-    y1 = min(y0 + 1, h - 1)
-    x1 = min(x0 + 1, w - 1)
-    dy = y - y0
-    dx = x - x0
-
-    v00 = field[:, y0, x0]
-    v01 = field[:, y0, x1]
-    v10 = field[:, y1, x0]
-    v11 = field[:, y1, x1]
-    return (
-        v00 * (1 - dx) * (1 - dy)
-        + v01 * dx * (1 - dy)
-        + v10 * (1 - dx) * dy
-        + v11 * dx * dy
-    )
+    # 最近邻
+    yi = int(round(y))
+    xi = int(round(x))
+    yi = max(0, min(yi, h - 1))
+    xi = max(0, min(xi, w - 1))
+    return field[:, yi, xi].copy()
 
 
 @numba.jit(nopython=True, parallel=True)
@@ -54,7 +39,7 @@ def step_kernel(
     过阻尼 Langevin 动力学，带墙壁斥力和掉网恢复。
     
     - field: (2, H, W) 归一化的导航方向场
-    - sdf: 距离场（可行区正值）
+    - sdf: 有符号距离场（可行区正值，非可行区负值）
     - mask: 可行区掩码
     - wall_dist_thresh: 离边界多近开始斥力
     - wall_push_strength: 斥力强度
@@ -75,8 +60,8 @@ def step_kernel(
         
         yi = int(y)
         xi = int(x)
-        dist = sdf[yi, xi]
-        is_on_road = mask[yi, xi] > 0
+        dist = sdf[yi, xi]  # 有符号：正=可行区内，负=可行区外
+        is_on_road = dist > 0
         
         # === 1. 导航力 ===
         nav_dir = bilinear_sample(field, y, x)
@@ -86,24 +71,20 @@ def step_kernel(
         # === 2. 墙壁斥力 / 掉网恢复 ===
         wall_vy, wall_vx = 0.0, 0.0
         
+        # 计算 SDF 梯度（指向 SDF 增大的方向，即指向可行区内部）
+        grad_y = (sdf[min(yi+1, H-1), xi] - sdf[max(yi-1, 0), xi]) * 0.5
+        grad_x = (sdf[yi, min(xi+1, W-1)] - sdf[yi, max(xi-1, 0)]) * 0.5
+        grad_mag = np.sqrt(grad_y * grad_y + grad_x * grad_x) + 1e-6
+        
         if not is_on_road:
-            # 掉网：用 SDF 梯度找到最近可行区方向，强力推回
-            grad_y = (sdf[min(yi+1, H-1), xi] - sdf[max(yi-1, 0), xi]) * 0.5
-            grad_x = (sdf[yi, min(xi+1, W-1)] - sdf[yi, max(xi-1, 0)]) * 0.5
-            grad_mag = np.sqrt(grad_y * grad_y + grad_x * grad_x) + 1e-6
-            # 往 SDF 增大的方向走（回到路网）
+            # 掉网：用 SDF 梯度回到可行区
+            # SDF 梯度指向可行区内部（因为可行区 SDF 更大）
             wall_vy = (grad_y / grad_mag) * off_road_recovery
             wall_vx = (grad_x / grad_mag) * off_road_recovery
-            # 掉网时抑制导航力
-            nav_vy *= 0.1
-            nav_vx *= 0.1
+            # 导航场在非可行区已经有指向道路的方向，不需要抑制
             
         elif dist < wall_dist_thresh:
-            # 靠近边界：柔性斥力
-            grad_y = (sdf[min(yi+1, H-1), xi] - sdf[max(yi-1, 0), xi]) * 0.5
-            grad_x = (sdf[yi, min(xi+1, W-1)] - sdf[yi, max(xi-1, 0)]) * 0.5
-            grad_mag = np.sqrt(grad_y * grad_y + grad_x * grad_x) + 1e-6
-            # 斥力随距离衰减
+            # 靠近边界：柔性斥力，推向可行区内部
             push = wall_push_strength * (1.0 - dist / wall_dist_thresh)
             wall_vy = (grad_y / grad_mag) * push
             wall_vx = (grad_x / grad_mag) * push

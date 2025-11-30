@@ -16,16 +16,41 @@ from src.phase3.simulation.recorder import TrajRecorder
 def main(n_agents=None, n_steps=None):
     print("加载环境...")
     mask, field, sdf = load_environment()
-    density = np.load(config.TARGET_DENSITY_PATH)
+    
+    # 加载距离场用于初始化粒子位置
+    dist_field_path = config.OUTPUT_DIR.parent / "processed" / "distance_field.npy"
+    if dist_field_path.exists():
+        dist_field = np.load(dist_field_path)
+        # 只在可行区域采样，用距离场作为权重
+        # 距离越远（离 sink 越远）越可能被选中
+        # 过滤掉：1) sink 区域 (dist=0), 2) 异常孤立像素 (dist >= 5000)
+        walkable = mask > 0
+        valid = walkable & (dist_field > 0) & (dist_field < 5000)
+        spawn_weight = np.zeros_like(dist_field)
+        spawn_weight[valid] = np.clip(dist_field[valid], 10, 500)
+        print(f"[Spawner] 使用距离场权重: 有效点 {valid.sum()}/{walkable.sum()}, "
+              f"range=[{spawn_weight[valid].min():.0f}, {spawn_weight[valid].max():.0f}]")
+    else:
+        # 回退：均匀分布
+        spawn_weight = (mask > 0).astype(np.float32)
+        print("[Spawner] 均匀分布")
 
     n_agents = n_agents or config.AGENT_COUNT
     n_steps = n_steps or config.MAX_STEPS
 
     # 初始化粒子
-    spawner = Spawner(mask=mask, weight_map=density)
+    spawner = Spawner(mask=mask, weight_map=spawn_weight)
     pos = spawner.sample_positions(n_agents).astype(np.float32)
     vel = np.zeros((n_agents, 2), dtype=np.float32)
     active = np.ones((n_agents,), dtype=np.bool_)
+    
+    # 打印初始距离统计
+    if dist_field_path.exists():
+        H, W = mask.shape
+        init_dists = [dist_field[int(np.clip(pos[i,0], 0, H-1)), 
+                                  int(np.clip(pos[i,1], 0, W-1))] 
+                      for i in range(min(100, n_agents))]
+        print(f"[Init] 初始距离: mean={np.mean(init_dists):.0f}, min={np.min(init_dists):.0f}, max={np.max(init_dists):.0f}")
 
     recorder = TrajRecorder(agent_count=n_agents, buffer_steps=config.BUFFER_STEPS, out_path=config.TRAJ_PATH)
 
@@ -60,9 +85,16 @@ def main(n_agents=None, n_steps=None):
             eta_str = f"{eta/60:.1f} min" if eta > 0 else "N/A"
             # 统计当前速度
             speed = np.sqrt((vel**2).sum(axis=1))
-            on_road = np.array([mask[int(pos[i,0]), int(pos[i,1])] > 0 for i in range(min(1000, n_agents))])
+            H, W = mask.shape
+            on_road_count = 0
+            for i in range(min(1000, n_agents)):
+                y = int(np.clip(pos[i, 0], 0, H-1))
+                x = int(np.clip(pos[i, 1], 0, W-1))
+                if mask[y, x] > 0:
+                    on_road_count += 1
+            on_road_ratio = on_road_count / min(1000, n_agents)
             print(f"step {t+1}/{n_steps} | elapsed {elapsed:.1f}s | {steps_per_sec:.2f} steps/s | ETA {eta_str} | "
-                  f"speed mean={speed.mean():.3f} max={speed.max():.3f} | on_road={on_road.mean()*100:.1f}%")
+                  f"speed mean={speed.mean():.3f} max={speed.max():.3f} | on_road={on_road_ratio*100:.1f}%")
 
     recorder.close()
     total_time = time.time() - t0

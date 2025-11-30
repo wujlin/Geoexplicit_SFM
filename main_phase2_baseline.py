@@ -25,6 +25,7 @@ def main():
         "clamp_min": 0.0,
         "clamp_max": None,
         "normalize": True,
+        "use_distance_field": True,  # 启用距离场导航
     }
     out = solve_field(mask, density, **params)
     field = out["smooth_field"]
@@ -34,6 +35,19 @@ def main():
     np.save(config.FIELD_BASELINE_PATH, field)
     np.savez(config.GRAD_BASELINE_PATH, grad_y=grad_y, grad_x=grad_x)
     np.savez(config.SCORE_BASELINE_PATH, score_y=score_y, score_x=score_x)
+    
+    # 保存基于距离场的导航方向
+    if "nav" in out:
+        nav_y, nav_x = out["nav"]
+        np.savez(config.OUTPUT_DIR / "nav_baseline.npz", nav_y=nav_y, nav_x=nav_x)
+        nav_mag = np.hypot(nav_y, nav_x)
+        print(f"保存导航场: nav_baseline.npz")
+        print(f"导航场统计: magnitude range=[{nav_mag.min():.4f}, {nav_mag.max():.4f}], "
+              f"mean={nav_mag.mean():.4f}, >0.5 ratio={(nav_mag > 0.5).mean()*100:.1f}%")
+    
+    if "distance_field" in out:
+        np.save(config.OUTPUT_DIR / "distance_field.npy", out["distance_field"])
+        print(f"保存距离场: distance_field.npy, range=[{out['distance_field'].min():.1f}, {out['distance_field'].max():.1f}]")
 
     print(f"保存 baseline 场: {config.FIELD_BASELINE_PATH}")
     print(f"保存梯度: {config.GRAD_BASELINE_PATH}")
