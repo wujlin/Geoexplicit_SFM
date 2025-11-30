@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def double_conv(in_ch, out_ch):
@@ -34,14 +35,26 @@ class UNetSmall(nn.Module):
         self.outc = nn.Conv2d(base_channels, 2, kernel_size=1)
 
     def forward(self, x):
+        h0, w0 = x.shape[-2], x.shape[-1]
+        pad_h = (4 - h0 % 4) % 4
+        pad_w = (4 - w0 % 4) % 4
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h))
+
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
         x = self.up1(x3)
+        if x.shape[-2:] != x2.shape[-2:]:
+            x2 = x2[..., : x.shape[-2], : x.shape[-1]]
         x = torch.cat([x, x2], dim=1)
         x = self.conv1(x)
         x = self.up2(x)
+        if x.shape[-2:] != x1.shape[-2:]:
+            x1 = x1[..., : x.shape[-2], : x.shape[-1]]
         x = torch.cat([x, x1], dim=1)
         x = self.conv2(x)
         x = self.outc(x)
+        if pad_h or pad_w:
+            x = x[..., :h0, :w0]
         return x

@@ -11,6 +11,14 @@ import math
 from dataclasses import dataclass
 from typing import Tuple
 
+import sys
+from pathlib import Path
+
+# 确保项目根目录在 sys.path，支持直接 python trainer.py 运行
+ROOT_DIR = Path(__file__).resolve().parents[3]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -18,6 +26,11 @@ from torch.utils.data import DataLoader, Dataset
 
 from src.phase2 import config
 from src.phase2.innovation.network import UNetSmall
+
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - 可选依赖
+    tqdm = None
 
 
 def _sample_indices_from_density(density: np.ndarray, rng: np.random.Generator) -> Tuple[int, int]:
@@ -115,14 +128,18 @@ def train_dsm(
         query_sigma=cfg.query_sigma,
         n_samples=cfg.num_steps * cfg.batch_size,
     )
-    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, num_workers=0)
+    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, num_workers=0, drop_last=True)
 
     device = torch.device(cfg.device)
     model = UNetSmall(in_channels=3, base_channels=32).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
+    iterator = loader
+    if tqdm is not None:
+        iterator = tqdm(loader, total=min(cfg.num_steps, len(loader)), ncols=80, desc="train")
+
     global_step = 0
-    for batch in loader:
+    for batch in iterator:
         opt.zero_grad()
         inp, target_vec, coords = batch
         inp = inp.to(device)
@@ -137,6 +154,8 @@ def train_dsm(
 
         if global_step % cfg.log_interval == 0:
             print(f"[step {global_step}] loss={loss.item():.6f}")
+        if tqdm is not None:
+            iterator.set_postfix({"loss": f"{loss.item():.4f}"})
         global_step += 1
         if global_step >= cfg.num_steps:
             break
