@@ -49,44 +49,56 @@ def step_kernel(
     pos, vel: (N,2)
     active: (N,)
     field: (2,H,W) - score/导航场
-    sdf: (H,W) - distance transform
-    返回 escaped_indices 列表
+    sdf: (H,W) - distance transform，正值在可行走区域
+    墙壁斥力：基于 sdf 梯度，避免掉出路网
     """
     N = pos.shape[0]
+    H, W = sdf.shape
+    WALL_STIFFNESS = 20.0
     for i in numba.prange(N):
         if not active[i]:
             continue
         y, x = pos[i, 0], pos[i, 1]
         fy, fx = bilinear_sample(field, y, x)
-        # 归一化导航力
-        normf = np.sqrt(fy * fy + fx * fx) + 1e-6
-        fy /= normf
-        fx /= normf
+        mag = np.sqrt(fy * fy + fx * fx) + 1e-9
+        if mag > 1e-3:
+            fy /= mag
+            fx /= mag
 
-        # 噪声
+        # 墙壁斥力：SDF 梯度指向路心
+        yi = int(y)
+        xi = int(x)
+        yi = 1 if yi < 1 else (H - 2 if yi > H - 2 else yi)
+        xi = 1 if xi < 1 else (W - 2 if xi > W - 2 else xi)
+        grad_y = (sdf[yi + 1, xi] - sdf[yi - 1, xi]) * 0.5
+        grad_x = (sdf[yi, xi + 1] - sdf[yi, xi - 1]) * 0.5
+        dist = sdf[yi, xi]
+        f_wall_y = 0.0
+        f_wall_x = 0.0
+        if dist < 3.0:
+            strength = WALL_STIFFNESS * (3.0 - dist)
+            f_wall_y = grad_y * strength
+            f_wall_x = grad_x * strength
+
         ny = noise_sigma * np.random.randn()
         nx = noise_sigma * np.random.randn()
 
-        # 简单墙壁斥力：基于 sdf 梯度符号（粗略）
-        sy = sdf[int(y), int(x)]
-        # 速度更新
-        vel[i, 0] += ((fy * v0 - vel[i, 0]) / tau) * dt + ny * np.sqrt(dt)
-        vel[i, 1] += ((fx * v0 - vel[i, 1]) / tau) * dt + nx * np.sqrt(dt)
+        vel[i, 0] += ((fy * v0 - vel[i, 0]) / tau + f_wall_y) * dt + ny * np.sqrt(dt)
+        vel[i, 1] += ((fx * v0 - vel[i, 1]) / tau + f_wall_x) * dt + nx * np.sqrt(dt)
 
         pos[i, 0] += (vel[i, 0] * dt) / pixel_scale
         pos[i, 1] += (vel[i, 1] * dt) / pixel_scale
 
         # 边界裁剪
-        if pos[i, 0] < 0:
-            pos[i, 0] = 0
-        if pos[i, 0] > field.shape[1] - 1:
-            pos[i, 0] = field.shape[1] - 1
-        if pos[i, 1] < 0:
-            pos[i, 1] = 0
-        if pos[i, 1] > field.shape[2] - 1:
-            pos[i, 1] = field.shape[2] - 1
+        if pos[i, 0] < 0.1:
+            pos[i, 0] = 0.1
+        if pos[i, 0] > H - 1.1:
+            pos[i, 0] = H - 1.1
+        if pos[i, 1] < 0.1:
+            pos[i, 1] = 0.1
+        if pos[i, 1] > W - 1.1:
+            pos[i, 1] = W - 1.1
 
-        # 到达判定：当前 sdf 小于阈值
-        if respawn_radius > 0.0 and sy <= respawn_radius:
+        if respawn_radius > 0.0 and dist <= respawn_radius:
             active[i] = False
-    return
+    return 0
