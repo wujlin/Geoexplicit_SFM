@@ -7,3 +7,4 @@ contextily
 osmnx
 rasterio
 scipy
+torch

@@ -31,7 +31,11 @@
 - 结构初始化：`src/phase2/__init__.py`、`src/phase2/common/__init__.py`、baseline/innovation 目录占位。
 - 依赖更新：`requirements.txt` 增加 osmnx、rasterio、scipy。
 
+## Step 1.5: Baseline Solver Scaffold
+- 新增 `src/phase2/baseline/pde_solver.py`：有限差分扩散、梯度/score 计算，封装 `solve_field`。
+- `geo_rasterizer` 支持本地路网（`dataset/geo/MI_road_cleaned.shp/...`），已生成 `walkable_mask.npy`（598x923，mean≈0.425）和归一化的 `target_density.npy`。
+
 ## 待办（Phase2 后续）
-- Baseline: `pde_solver.py` + `main_phase2_baseline.py`。
+- Baseline: 编写 `main_phase2_baseline.py`，读取 mask/density，调用 `solve_field`，保存 `field_baseline.npy`（以及梯度/score npz），可加简易可视化。
 - Innovation: dataset/network/trainer + `main_phase2_innovation.py`。
 - Comparison: 并排流线可视化。

@@ -17,6 +17,11 @@ WORLDPOP_RASTER = None  # 可选: Path(...) 指向 worldpop tif
 OUTPUT_DIR = BASE_DIR / "data" / "processed"
 WALKABLE_MASK_PATH = OUTPUT_DIR / "walkable_mask.npy"
 TARGET_DENSITY_PATH = OUTPUT_DIR / "target_density.npy"
+FIELD_BASELINE_PATH = OUTPUT_DIR / "field_baseline.npy"
+GRAD_BASELINE_PATH = OUTPUT_DIR / "grad_baseline.npz"
+SCORE_BASELINE_PATH = OUTPUT_DIR / "score_baseline.npz"
+BASELINE_VIZ_PATH = OUTPUT_DIR / "baseline_field.png"
+INNOVATION_MODEL_PATH = OUTPUT_DIR / "score_unet.pt"
 
 # 栅格参数
 GRID_RES_M = 100.0          # 栅格分辨率（米）
