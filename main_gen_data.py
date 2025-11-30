@@ -2,6 +2,7 @@
 Phase 3 数据生成入口：无渲染模拟，输出 npz 轨迹。
 """
 
+import argparse
 import numpy as np
 import time
 
@@ -12,13 +13,13 @@ from src.phase3.simulation.spawner import Spawner
 from src.phase3.simulation.recorder import TrajRecorder
 
 
-def main():
+def main(n_agents=None, n_steps=None):
     print("加载环境...")
     mask, field, sdf = load_environment()
     density = np.load(config.TARGET_DENSITY_PATH)
 
-    n_agents = config.AGENT_COUNT
-    n_steps = config.MAX_STEPS
+    n_agents = n_agents or config.AGENT_COUNT
+    n_steps = n_steps or config.MAX_STEPS
 
     # 初始化粒子
     spawner = Spawner(mask=mask, weight_map=density)
@@ -43,6 +44,7 @@ def main():
             config.NOISE_SIGMA,
             config.V0,
             config.RESPAWN_RADIUS,
+            config.GRID_RES_M,
         )
         # 到达/失活的粒子重生
         died = np.where(active_prev & (~active))[0]
@@ -63,4 +65,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--agents", type=int, default=None, help="number of agents")
+    parser.add_argument("--steps", type=int, default=None, help="number of steps")
+    args = parser.parse_args()
+    main(n_agents=args.agents, n_steps=args.steps)

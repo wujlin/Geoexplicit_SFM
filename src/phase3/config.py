@@ -19,10 +19,12 @@ TRAJ_PATH = OUTPUT_DIR / "trajectories.h5"
 DT = 0.5
 MAX_STEPS = 5000
 NOISE_SIGMA = 0.2
-TAU = 1.0
-V0 = 1.0
+TAU = 0.5
+V0 = 2.0
 AGENT_COUNT = 10000
 RESPAWN_RADIUS = 1.5  # 到达阈值（网格距离）
+# 像素/秒缩放：若 V0 为米/秒，则 V0_PIX = V0 / GRID_RES_M
+GRID_RES_M = 100.0  # 对应 Phase2 栅格分辨率
 
 # 缓冲写入
 BUFFER_STEPS = 1000

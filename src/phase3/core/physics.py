@@ -43,6 +43,7 @@ def step_kernel(
     noise_sigma,
     v0,
     respawn_radius,
+    pixel_scale,
 ):
     """
     pos, vel: (N,2)
@@ -72,8 +73,8 @@ def step_kernel(
         vel[i, 0] += ((fy * v0 - vel[i, 0]) / tau) * dt + ny * np.sqrt(dt)
         vel[i, 1] += ((fx * v0 - vel[i, 1]) / tau) * dt + nx * np.sqrt(dt)
 
-        pos[i, 0] += vel[i, 0] * dt
-        pos[i, 1] += vel[i, 1] * dt
+        pos[i, 0] += (vel[i, 0] * dt) / pixel_scale
+        pos[i, 1] += (vel[i, 1] * dt) / pixel_scale
 
         # 边界裁剪
         if pos[i, 0] < 0:
