@@ -21,6 +21,7 @@ FIELD_BASELINE_PATH = OUTPUT_DIR / "field_baseline.npy"
 GRAD_BASELINE_PATH = OUTPUT_DIR / "grad_baseline.npz"
 SCORE_BASELINE_PATH = OUTPUT_DIR / "score_baseline.npz"
 BASELINE_VIZ_PATH = OUTPUT_DIR / "baseline_field.png"
+# Innovation 相关暂不使用，保留占位
 INNOVATION_MODEL_PATH = OUTPUT_DIR / "score_unet.pt"
 INNOVATION_SAMPLES_PATH = OUTPUT_DIR / "score_samples.npz"
 INNOVATION_VIZ_PATH = OUTPUT_DIR / "score_field_innovation.png"
