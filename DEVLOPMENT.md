@@ -41,6 +41,7 @@
 - Comparison 仅用于 Baseline 可视化检查。
 
 # Phase 3 规划（数据工厂）
-- 目标：基于 Baseline 导航场 + 朗之万噪声，Numba 加速批量生成合成轨迹，供 Phase4 Diffusion 训练。
+- 目标：基于 Baseline 导航场 + 过阻尼 Langevin 噪声，Numba 加速批量生成合成轨迹，供 Phase4 Diffusion 训练。
 - 目录：`src/phase3/`（config、core/environment & physics、simulation/spawner/engine/recorder），入口 `main_gen_data.py`。
-- 输出：`data/output/trajectories.h5`（或 npz），包含大规模 `(pos, vel, mask)` 时间序列；粒子池重生模式、环形缓冲写盘。
+- 输出：`data/output/trajectories.h5`，包含大规模 `(pos, vel)` 时间序列；粒子池重生模式、环形缓冲写盘。
+- 物理内核：过阻尼 Langevin（无惯性），直接用场方向+噪声更新位置，靠 SDF 梯度轻推回路网；当前关键参数 `V0=5.0`，`NOISE_SIGMA=0.2`，`GRID_RES_M=100.0`，`DT=0.5`。可视化脚本支持断开重生跳线。

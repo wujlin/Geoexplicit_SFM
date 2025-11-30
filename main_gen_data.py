@@ -30,34 +30,39 @@ def main(n_agents=None, n_steps=None):
     recorder = TrajRecorder(agent_count=n_agents, buffer_steps=config.BUFFER_STEPS, out_path=config.TRAJ_PATH)
 
     print(f"开始模拟: agents={n_agents}, steps={n_steps}")
+    print(f"参数: V0={config.V0}, DT={config.DT}, NOISE={config.NOISE_SIGMA}, "
+          f"WALL_THRESH={config.WALL_DIST_THRESH}, WALL_PUSH={config.WALL_PUSH_STRENGTH}, "
+          f"OFF_ROAD_RECOVERY={config.OFF_ROAD_RECOVERY}")
+    
     t0 = time.time()
     for t in range(n_steps):
-        active_prev = active.copy()
         step_kernel(
             pos,
             vel,
             active,
             field,
             sdf,
+            mask,
             config.DT,
-            config.TAU,
             config.NOISE_SIGMA,
             config.V0,
-            config.RESPAWN_RADIUS,
-            config.GRID_RES_M,
+            config.WALL_DIST_THRESH,
+            config.WALL_PUSH_STRENGTH,
+            config.OFF_ROAD_RECOVERY,
         )
-        # 到达/失活的粒子重生
-        died = np.where(active_prev & (~active))[0]
-        if len(died) > 0:
-            spawner.respawn(pos, vel, active, died)
 
         recorder.collect(pos, vel)
+        
         if (t + 1) % 500 == 0:
             elapsed = time.time() - t0
             steps_per_sec = (t + 1) / elapsed if elapsed > 0 else 0.0
             eta = (n_steps - t - 1) / steps_per_sec if steps_per_sec > 0 else -1
             eta_str = f"{eta/60:.1f} min" if eta > 0 else "N/A"
-            print(f"step {t+1}/{n_steps} | elapsed {elapsed:.1f}s | {steps_per_sec:.2f} steps/s | ETA {eta_str}")
+            # 统计当前速度
+            speed = np.sqrt((vel**2).sum(axis=1))
+            on_road = np.array([mask[int(pos[i,0]), int(pos[i,1])] > 0 for i in range(min(1000, n_agents))])
+            print(f"step {t+1}/{n_steps} | elapsed {elapsed:.1f}s | {steps_per_sec:.2f} steps/s | ETA {eta_str} | "
+                  f"speed mean={speed.mean():.3f} max={speed.max():.3f} | on_road={on_road.mean()*100:.1f}%")
 
     recorder.close()
     total_time = time.time() - t0
