@@ -1,8 +1,7 @@
 """
-Score Field 训练（Denoising Score Matching）：
-- 从 target_density 按概率采样点，加入高斯噪声
-- 构造 query heatmap，网络输出 score 场
-- 在噪声点位置处采样预测向量，与理论 score 目标做 MSE
+Score Field 训练（One-Map DSM 优化版）：
+- 静态输入（mask+density）只前向一次；在同一张图上随机采样大量坐标，直接预测噪声方向。
+- 目标为标准高斯噪声（带负号代表恢复方向），避免数值过小导致模型“躺平”。
 """
 
 from __future__ import annotations
@@ -34,18 +33,22 @@ except Exception:  # pragma: no cover - 可选依赖
     tqdm = None
 
 
-def _sample_indices_from_density(density: np.ndarray, rng: np.random.Generator) -> Tuple[int, int]:
+def _sample_indices_from_density(density: np.ndarray, rng: np.random.Generator, n: int) -> Tuple[np.ndarray, np.ndarray]:
     flat = density.reshape(-1)
     flat = flat + 1e-9
     probs = flat / flat.sum()
-    idx = rng.choice(len(flat), p=probs)
+    idx = rng.choice(len(flat), size=n, p=probs)
     h, w = density.shape
     y = idx // w
     x = idx % w
-    return int(y), int(x)
+    return y, x
 
 
 class ScoreDataset(Dataset):
+    """
+    轻量 Dataset：预生成采样点与噪声目标，不返回图像（图像固定在训练循环中）。
+    """
+
     def __init__(
         self,
         density: np.ndarray,
@@ -55,12 +58,19 @@ class ScoreDataset(Dataset):
         seed: int = 42,
     ):
         self.density = density.astype(np.float32)
-        self.mask = mask.astype(np.float32)
         self.sigma = sigma
         self.n_samples = n_samples
         self.rng = np.random.default_rng(seed)
         self.h, self.w = density.shape
-        self.static_input = np.stack([self.mask, self.density], axis=0)
+
+        # 预生成采样与噪声，提升性能
+        print(f"Pre-generating {n_samples} samples with sigma={sigma} ...")
+        y0s, x0s = _sample_indices_from_density(self.density, self.rng, n_samples)
+        eps = self.rng.normal(loc=0.0, scale=1.0, size=(n_samples, 2)).astype(np.float32)
+        y_noisy = np.clip(y0s + eps[:, 0] * sigma, 0, self.h - 1)
+        x_noisy = np.clip(x0s + eps[:, 1] * sigma, 0, self.w - 1)
+        self.coords = np.stack([y_noisy, x_noisy], axis=1).astype(np.float32)  # (N,2)
+        self.targets = -1.0 * eps  # 恢复方向
 
     def __len__(self):
         return self.n_samples
@@ -69,44 +79,36 @@ class ScoreDataset(Dataset):
         self.rng = np.random.default_rng(seed)
 
     def __getitem__(self, idx):
-        y0, x0 = _sample_indices_from_density(self.density, self.rng)
-        epsilon = self.rng.normal(loc=0.0, scale=1.0, size=2).astype(np.float32)
-        y_noisy = float(np.clip(y0 + epsilon[0] * self.sigma, 0, self.h - 1))
-        x_noisy = float(np.clip(x0 + epsilon[1] * self.sigma, 0, self.w - 1))
-
-        # 预测噪声本身（带负号表示恢复方向），避免数值过小坍缩
-        target_vec = -1.0 * epsilon
-        coord = np.array([y_noisy, x_noisy], dtype=np.float32)
-        return torch.from_numpy(self.static_input), torch.from_numpy(target_vec), torch.from_numpy(coord)
+        return torch.from_numpy(self.targets[idx]), torch.from_numpy(self.coords[idx])
 
 
 def _sample_pred_at_coords(pred: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
     """
-    pred: (B, 2, H, W)
+    pred: (1, 2, H, W) 静态大图
     coords: (B, 2) in (y, x)
     返回 (B, 2) 在坐标处的双线性采样值。
     """
-    b, _, h, w = pred.shape
+    _, _, h, w = pred.shape
     y = coords[:, 0]
     x = coords[:, 1]
     x_norm = 2 * (x / (w - 1)) - 1
     y_norm = 2 * (y / (h - 1)) - 1
-    grid = torch.stack([x_norm, y_norm], dim=1).view(b, 1, 1, 2)
+    grid = torch.stack([x_norm, y_norm], dim=1).view(1, 1, len(coords), 2)
     sampled = F.grid_sample(pred, grid, align_corners=True)
-    return sampled.view(b, 2)
+    return sampled.view(2, len(coords)).permute(1, 0)
 
 
 @dataclass
 class TrainConfig:
-    batch_size: int = 8
+    batch_size: int = 2048
     lr: float = 1e-3
-    num_steps: int = 5000
+    num_steps: int = 10000
     sigma: float = 10.0
     log_interval: int = 200
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     num_workers: int = 4
     pin_memory: bool = True
-    base_channels: int = 32
+    base_channels: int = 64
     amp: bool = True  # 混合精度加速
     seed: int = 42
 
@@ -121,11 +123,13 @@ def train_dsm(
     density_np = np.load(density_path or config.TARGET_DENSITY_PATH)
     mask_np = np.load(mask_path or config.WALKABLE_MASK_PATH)
 
+    total_samples = cfg.batch_size * cfg.num_steps
     dataset = ScoreDataset(
         density_np,
         mask_np,
         sigma=cfg.sigma,
-        n_samples=cfg.num_steps * cfg.batch_size,
+        n_samples=min(total_samples, 2_000_000),  # 防止过大占内存
+        seed=cfg.seed,
     )
     loader = DataLoader(
         dataset,
@@ -135,29 +139,31 @@ def train_dsm(
         pin_memory=cfg.pin_memory,
         drop_last=True,
         persistent_workers=cfg.num_workers > 0,
-        worker_init_fn=(lambda worker_id: dataset.reset_rng(cfg.seed + worker_id)) if cfg.num_workers > 0 else None,
     )
 
     device = torch.device(cfg.device)
+    static_map = torch.from_numpy(np.stack([mask_np, density_np], axis=0)).unsqueeze(0).float().to(device)
     model = UNetSmall(in_channels=2, base_channels=cfg.base_channels).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     scaler = torch.cuda.amp.GradScaler(enabled=cfg.amp and device.type == "cuda")
 
-    iterator = loader
-    if tqdm is not None:
-        iterator = tqdm(loader, total=min(cfg.num_steps, len(loader)), ncols=80, desc="train")
+    def infinite_loader(dl):
+        while True:
+            for batch in dl:
+                yield batch
 
-    global_step = 0
+    iterator = infinite_loader(loader)
+    pbar = tqdm(range(cfg.num_steps), ncols=80, desc="train") if tqdm is not None else range(cfg.num_steps)
+
     last_loss = None
-    for batch in iterator:
+    for global_step in pbar:
         opt.zero_grad(set_to_none=True)
-        inp, target_vec, coords = batch
-        inp = inp.to(device, non_blocking=True)
+        target_vec, coords = next(iterator)
         target_vec = target_vec.to(device, non_blocking=True)
         coords = coords.to(device, non_blocking=True)
 
         with torch.cuda.amp.autocast(enabled=cfg.amp and device.type == "cuda"):
-            pred_field = model(inp)
+            pred_field = model(static_map)  # (1,2,H,W)
             pred_vec = _sample_pred_at_coords(pred_field, coords)
             loss = ((pred_vec - target_vec) ** 2).sum(dim=1).mean()
 
@@ -166,13 +172,10 @@ def train_dsm(
         scaler.update()
 
         last_loss = float(loss.item())
-        if global_step % cfg.log_interval == 0:
-            print(f"[step {global_step}] loss={last_loss:.6f}")
         if tqdm is not None:
-            iterator.set_postfix({"loss": f"{last_loss:.4f}"})
-        global_step += 1
-        if global_step >= cfg.num_steps:
-            break
+            pbar.set_postfix({"loss": f"{last_loss:.4f}"})
+        elif global_step % cfg.log_interval == 0:
+            print(f"[step {global_step}] loss={last_loss:.6f}")
 
     out_path = model_out or config.INNOVATION_MODEL_PATH
     torch.save(model.state_dict(), out_path)
@@ -182,7 +185,7 @@ def train_dsm(
         {
             "density_path": str(density_path or config.TARGET_DENSITY_PATH),
             "mask_path": str(mask_path or config.WALKABLE_MASK_PATH),
-            "steps_finished": global_step,
+            "steps_finished": cfg.num_steps,
             "final_loss": last_loss,
         }
     )
@@ -200,13 +203,13 @@ def _parse_cli_args():
     parser.add_argument("--density", type=str, default=None, help="path to target_density.npy")
     parser.add_argument("--mask", type=str, default=None, help="path to walkable_mask.npy")
     parser.add_argument("--out", type=str, default=None, help="output model path")
-    parser.add_argument("--batch", type=int, default=128)
-    parser.add_argument("--steps", type=int, default=5000)
+    parser.add_argument("--batch", type=int, default=2048)
+    parser.add_argument("--steps", type=int, default=10000)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--sigma", type=float, default=10.0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--base_channels", type=int, default=32)
+    parser.add_argument("--base_channels", type=int, default=64)
     parser.add_argument("--no_amp", action="store_true", help="disable AMP")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -226,6 +229,10 @@ def _parse_cli_args():
 
 if __name__ == "__main__":
     args, cfg = _parse_cli_args()
+    # One-Map 模式下，如 batch 过小则提升
+    if cfg.batch_size < 1024:
+        print(f"提示: One-Map 模式将 batch 从 {cfg.batch_size} 提升至 2048")
+        cfg.batch_size = 2048
     train_dsm(
         density_path=args.density,
         mask_path=args.mask,
