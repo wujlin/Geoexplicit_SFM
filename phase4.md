@@ -149,21 +149,7 @@ src/phase4/
 
 -----
 
-## 7\. 给 Codex 的 Prompt 建议
 
-**启动 Phase 4**:
-
-> "我们现在进入 Phase 4。目标是基于 `data/output/trajectories.h5` 训练一个 Diffusion Policy。
-> 请首先创建 `src/phase4/config.py` 和 `src/phase4/data/dataset.py`。
-> 我们需要一个 PyTorch Dataset，支持从 HDF5 文件中通过滑动窗口读取 `(observation, action)` 对。
-> Observation 包含过去 2 步的位置和速度，Action 是未来 8 步的速度序列。"
-
-**构建网络**:
-
-> "现在实现 `src/phase4/model/unet1d.py`。
-> 我需要一个基于 1D 卷积的 Conditional UNet。
-> 它需要接收 Timestep Embedding 和 Global Condition (比如目标方向) 作为输入。
-> 参考 'Diffusion Policy' 的网络架构设计。"
 
 ```
 ```

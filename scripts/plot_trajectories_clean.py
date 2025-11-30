@@ -8,10 +8,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+# 确保项目根目录在 sys.path
+import sys
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
 from src.phase3 import config
 
 
-def plot_clean(n_agents=50, jump_thr=10.0, frame_stride=1, out_path=None):
+def plot_clean(n_agents=500, jump_thr=10.0, frame_stride=1, out_path=None):
     path = Path(config.TRAJ_PATH)
     if not path.exists():
         print("file not found:", path)
