@@ -7,8 +7,9 @@ Score Field 训练（Denoising Score Matching）：
 
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Tuple
 
 import sys
@@ -157,6 +158,7 @@ def train_dsm(
         iterator = tqdm(loader, total=min(cfg.num_steps, len(loader)), ncols=80, desc="train")
 
     global_step = 0
+    last_loss = None
     for batch in iterator:
         opt.zero_grad(set_to_none=True)
         inp, target_vec, coords = batch
@@ -173,10 +175,11 @@ def train_dsm(
         scaler.step(opt)
         scaler.update()
 
+        last_loss = float(loss.item())
         if global_step % cfg.log_interval == 0:
-            print(f"[step {global_step}] loss={loss.item():.6f}")
+            print(f"[step {global_step}] loss={last_loss:.6f}")
         if tqdm is not None:
-            iterator.set_postfix({"loss": f"{loss.item():.4f}"})
+            iterator.set_postfix({"loss": f"{last_loss:.4f}"})
         global_step += 1
         if global_step >= cfg.num_steps:
             break
@@ -184,6 +187,19 @@ def train_dsm(
     out_path = model_out or config.INNOVATION_MODEL_PATH
     torch.save(model.state_dict(), out_path)
     print(f"模型已保存: {out_path}")
+    meta = asdict(cfg)
+    meta.update(
+        {
+            "density_path": str(density_path or config.TARGET_DENSITY_PATH),
+            "mask_path": str(mask_path or config.WALKABLE_MASK_PATH),
+            "steps_finished": global_step,
+            "final_loss": last_loss,
+        }
+    )
+    meta_path = str(out_path) + ".json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    print(f"配置元数据已保存: {meta_path}")
     return model
 
 
