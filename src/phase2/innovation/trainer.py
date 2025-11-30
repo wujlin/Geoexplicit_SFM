@@ -1,7 +1,7 @@
 """
-Score Field 训练（One-Map DSM 优化版）：
-- 静态输入（mask+density）只前向一次；在同一张图上随机采样大量坐标，直接预测噪声方向。
-- 目标为标准高斯噪声（带负号代表恢复方向），避免数值过小导致模型“躺平”。
+Score Field 训练（One-Map DSM + CoordConv）：
+- 静态输入（mask + density + norm_y + norm_x）只前向一次；在同一张图上随机采样大量坐标，直接预测噪声方向。
+- 目标为标准高斯噪声（带负号代表恢复方向），避免数值过小导致模型“躺平”，加入坐标通道打破平移不变性。
 """
 
 from __future__ import annotations
@@ -122,6 +122,14 @@ def train_dsm(
     cfg = cfg or TrainConfig()
     density_np = np.load(density_path or config.TARGET_DENSITY_PATH)
     mask_np = np.load(mask_path or config.WALKABLE_MASK_PATH)
+    h, w = density_np.shape
+
+    # 构造 4 通道输入：mask, density, norm_y, norm_x
+    print("Constructing 4-channel static input (mask, density, y, x)...")
+    y_grid = np.linspace(-1, 1, h, dtype=np.float32)
+    x_grid = np.linspace(-1, 1, w, dtype=np.float32)
+    yy, xx = np.meshgrid(y_grid, x_grid, indexing="ij")
+    static_inp_np = np.stack([mask_np, density_np, yy, xx], axis=0).astype(np.float32)
 
     total_samples = cfg.batch_size * cfg.num_steps
     dataset = ScoreDataset(
@@ -142,8 +150,8 @@ def train_dsm(
     )
 
     device = torch.device(cfg.device)
-    static_map = torch.from_numpy(np.stack([mask_np, density_np], axis=0)).unsqueeze(0).float().to(device)
-    model = UNetSmall(in_channels=2, base_channels=cfg.base_channels).to(device)
+    static_map = torch.from_numpy(static_inp_np).unsqueeze(0).float().to(device)  # (1,4,H,W)
+    model = UNetSmall(in_channels=4, base_channels=cfg.base_channels).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     scaler = torch.cuda.amp.GradScaler(enabled=cfg.amp and device.type == "cuda")
 
