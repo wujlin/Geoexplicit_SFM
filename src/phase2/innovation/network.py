@@ -23,7 +23,7 @@ def double_conv(in_ch, out_ch):
 
 
 class UNetSmall(nn.Module):
-    def __init__(self, in_channels: int = 3, base_channels: int = 32):
+    def __init__(self, in_channels: int = 2, base_channels: int = 32):
         super().__init__()
         self.inc = double_conv(in_channels, base_channels)
         self.down1 = nn.Sequential(nn.MaxPool2d(2), double_conv(base_channels, base_channels * 2))

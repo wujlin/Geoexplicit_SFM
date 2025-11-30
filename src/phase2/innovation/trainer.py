@@ -45,28 +45,22 @@ def _sample_indices_from_density(density: np.ndarray, rng: np.random.Generator) 
     return int(y), int(x)
 
 
-def _gaussian_query(h: int, w: int, y: float, x: float, sigma: float = 2.0) -> np.ndarray:
-    yy, xx = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
-    return np.exp(-((yy - y) ** 2 + (xx - x) ** 2) / (2 * sigma**2))
-
-
 class ScoreDataset(Dataset):
     def __init__(
         self,
         density: np.ndarray,
         mask: np.ndarray,
-        sigma: float = 4.0,
-        query_sigma: float = 2.0,
+        sigma: float = 3.5,
         n_samples: int = 50000,
         seed: int = 42,
     ):
         self.density = density.astype(np.float32)
         self.mask = mask.astype(np.float32)
         self.sigma = sigma
-        self.query_sigma = query_sigma
         self.n_samples = n_samples
         self.rng = np.random.default_rng(seed)
         self.h, self.w = density.shape
+        self.static_input = np.stack([self.mask, self.density], axis=0)
 
     def __len__(self):
         return self.n_samples
@@ -80,12 +74,9 @@ class ScoreDataset(Dataset):
         y_noisy = float(np.clip(y0 + noise[0], 0, self.h - 1))
         x_noisy = float(np.clip(x0 + noise[1], 0, self.w - 1))
 
-        query = _gaussian_query(self.h, self.w, y_noisy, x_noisy, sigma=self.query_sigma).astype(np.float32)
-        inp = np.stack([self.mask, self.density, query], axis=0)
-
         target_vec = np.array([(y0 - y_noisy) / (self.sigma**2), (x0 - x_noisy) / (self.sigma**2)], dtype=np.float32)
         coord = np.array([y_noisy, x_noisy], dtype=np.float32)
-        return torch.from_numpy(inp), torch.from_numpy(target_vec), torch.from_numpy(coord)
+        return torch.from_numpy(self.static_input), torch.from_numpy(target_vec), torch.from_numpy(coord)
 
 
 def _sample_pred_at_coords(pred: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
@@ -110,7 +101,6 @@ class TrainConfig:
     lr: float = 1e-3
     num_steps: int = 5000
     sigma: float = 3.5
-    query_sigma: float = 1.5
     log_interval: int = 200
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     num_workers: int = 4
@@ -134,7 +124,6 @@ def train_dsm(
         density_np,
         mask_np,
         sigma=cfg.sigma,
-        query_sigma=cfg.query_sigma,
         n_samples=cfg.num_steps * cfg.batch_size,
     )
     loader = DataLoader(
@@ -149,7 +138,7 @@ def train_dsm(
     )
 
     device = torch.device(cfg.device)
-    model = UNetSmall(in_channels=3, base_channels=cfg.base_channels).to(device)
+    model = UNetSmall(in_channels=2, base_channels=cfg.base_channels).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     scaler = torch.cuda.amp.GradScaler(enabled=cfg.amp and device.type == "cuda")
 
@@ -214,7 +203,6 @@ def _parse_cli_args():
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--sigma", type=float, default=3.5)
-    parser.add_argument("--query_sigma", type=float, default=1.5)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--base_channels", type=int, default=32)
@@ -226,7 +214,6 @@ def _parse_cli_args():
         lr=args.lr,
         num_steps=args.steps,
         sigma=args.sigma,
-        query_sigma=args.query_sigma,
         device=args.device,
         num_workers=args.workers,
         base_channels=args.base_channels,

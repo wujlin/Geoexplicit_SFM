@@ -24,6 +24,7 @@ BASELINE_VIZ_PATH = OUTPUT_DIR / "baseline_field.png"
 INNOVATION_MODEL_PATH = OUTPUT_DIR / "score_unet.pt"
 INNOVATION_SAMPLES_PATH = OUTPUT_DIR / "score_samples.npz"
 INNOVATION_VIZ_PATH = OUTPUT_DIR / "score_field_innovation.png"
+FIELD_INNOVATION_PATH = OUTPUT_DIR / "field_innovation.npy"
 COMPARISON_VIZ_PATH = OUTPUT_DIR / "comparison_baseline_innovation.png"
 
 # 栅格参数

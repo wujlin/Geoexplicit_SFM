@@ -8,25 +8,14 @@ from src.phase2 import config
 from src.phase2.baseline import solve_field
 from src.phase2.common.comparison import plot_comparison, compute_vector_stats
 from src.phase2.innovation.network import UNetSmall
-from src.phase2.innovation.trainer import _gaussian_query, _sample_pred_at_coords
 
 
-def infer_sparse(model, mask, density, stride=20, query_sigma=1.5, device="cpu"):
-    h, w = density.shape
-    ys = np.arange(0, h, stride)
-    xs = np.arange(0, w, stride)
-    coords, vecs = [], []
+def infer_full_field(model, mask, density, device="cpu"):
+    inp = np.stack([mask.astype(np.float32), density.astype(np.float32)], axis=0)
     with torch.no_grad():
-        for y in ys:
-            for x in xs:
-                query = _gaussian_query(h, w, y, x, sigma=query_sigma).astype(np.float32)
-                inp = np.stack([mask.astype(np.float32), density.astype(np.float32), query], axis=0)
-                inp_t = torch.from_numpy(inp[None]).to(device)
-                pred_field = model(inp_t)
-                pred_vec = _sample_pred_at_coords(pred_field, torch.tensor([[y, x]], device=device, dtype=torch.float32))
-                vecs.append(pred_vec.squeeze(0).cpu().numpy())
-                coords.append([y, x])
-    return np.array(coords, dtype=float), np.array(vecs, dtype=float)
+        pred = model(torch.from_numpy(inp[None]).to(device))
+    field = pred.squeeze(0).cpu().numpy()  # (2, H, W)
+    return field
 
 
 def main():
@@ -45,11 +34,23 @@ def main():
     vecs_base = baseline_score[coords_base[:, 0].astype(int), coords_base[:, 1].astype(int)]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNetSmall(in_channels=3, base_channels=32).to(device)
-    state = torch.load(config.INNOVATION_MODEL_PATH, map_location=device)
-    model.load_state_dict(state)
-    model.eval()
-    coords_innov, vecs_innov = infer_sparse(model, mask, density, stride=stride, query_sigma=1.5, device=device)
+    if Path(config.FIELD_INNOVATION_PATH).exists():
+        field_innov = np.load(config.FIELD_INNOVATION_PATH)  # (2, H, W)
+    else:
+        model = UNetSmall(in_channels=2, base_channels=32).to(device)
+        state = torch.load(config.INNOVATION_MODEL_PATH, map_location=device)
+        model.load_state_dict(state)
+        model.eval()
+        field_innov = infer_full_field(model, mask, density, device=device)
+
+    coords_innov = coords_base
+    vecs_innov = np.stack(
+        [
+            field_innov[0, coords_innov[:, 0].astype(int), coords_innov[:, 1].astype(int)],
+            field_innov[1, coords_innov[:, 0].astype(int), coords_innov[:, 1].astype(int)],
+        ],
+        axis=-1,
+    )
 
     out_img = plot_comparison(
         background=density,

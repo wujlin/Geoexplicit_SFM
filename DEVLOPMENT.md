@@ -36,6 +36,6 @@
 - `geo_rasterizer` 支持本地路网（`dataset/geo/MI_road_cleaned.shp/...`），已生成 `walkable_mask.npy`（598x923，mean≈0.425）和归一化的 `target_density.npy`。
 
 ## 待办（Phase2 后续）
-- Baseline: 编写 `main_phase2_baseline.py`，读取 mask/density，调用 `solve_field`，保存 `field_baseline.npy`（以及梯度/score npz），可加简易可视化。
-- Innovation: dataset/network/trainer + `main_phase2_innovation.py`。
-- Comparison: 并排流线可视化。
+- Baseline: 编写 `main_phase2_baseline.py`，读取 mask/density，调用 `solve_field`，保存 `field_baseline.npy`（以及梯度/score npz），可加简易可视化。 ✅ 已完成，输出 `baseline_field.png`。
+- Innovation: dataset/network/trainer + `main_phase2_innovation.py`。✅ 已完成，当前使用静态输入（mask+density），全图前向输出 `field_innovation.npy`，训练配置写入同名 `.json`；稀疏可视化 `score_field_innovation.png`。
+- Comparison: 并排流线可视化。✅ `main_phase2_compare.py` 生成 `comparison_baseline_innovation.png` 及指标 JSON（方向余弦、角度、差分）。
