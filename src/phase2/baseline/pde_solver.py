@@ -177,6 +177,128 @@ def compute_navigation_field(distance_field: np.ndarray, walkable_mask: np.ndarr
     return nav_y.astype(np.float32), nav_x.astype(np.float32)
 
 
+def compute_potential_field(
+    target_density: np.ndarray,
+    walkable_mask: np.ndarray,
+    decay_rate: float = 0.05,
+) -> np.ndarray:
+    """
+    计算加权势能场：每个 sink 产生加权引力场（距离衰减），叠加后得到全局势能场。
+    
+    势能公式: potential(x) = sum_i ( weight_i / (1 + decay * dist_i(x)) )
+    
+    这种方法：
+    1. 保留每个 sink 的流量权重
+    2. 梯度随距离衰减但不会消失
+    3. 方向始终指向"综合吸引力"最强的方向（权重大且距离近的 sink）
+    
+    返回：势能场（sink 处高，远离 sink 处低）
+    """
+    from scipy.ndimage import distance_transform_edt
+    
+    print(f"  计算势能场: 加权引力场叠加 (decay_rate={decay_rate})...")
+    
+    H, W = target_density.shape
+    
+    # 识别 sink 点（target_density > 0 的位置）
+    sink_threshold = target_density.max() * 0.001
+    sink_mask = target_density > sink_threshold
+    
+    # 获取 sink 坐标和权重
+    sink_ys, sink_xs = np.where(sink_mask)
+    sink_weights = target_density[sink_mask]
+    
+    print(f"    找到 {len(sink_ys)} 个 sink 点，权重范围: [{sink_weights.min():.4f}, {sink_weights.max():.4f}]")
+    
+    # 创建坐标网格
+    yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+    
+    # 对高权重 sink 逐个计算引力场（为效率只处理权重最高的 100 个点）
+    top_k = min(100, len(sink_ys))
+    top_indices = np.argsort(sink_weights)[-top_k:]
+    
+    field = np.zeros((H, W), dtype=np.float64)
+    
+    for idx in top_indices:
+        sy, sx = sink_ys[idx], sink_xs[idx]
+        weight = sink_weights[idx]
+        
+        # 欧几里得距离
+        dist = np.sqrt((yy - sy)**2 + (xx - sx)**2)
+        
+        # 引力场：weight / (1 + decay * dist)
+        contribution = weight / (1.0 + decay_rate * dist)
+        field += contribution
+    
+    # 归一化到 [0, 1]
+    field = field / (field.max() + 1e-9)
+    
+    # 统计
+    mask = walkable_mask > 0
+    walkable_coverage = (field[mask] > 0.001).sum() / mask.sum()
+    
+    # 检查梯度强度
+    grad_y, grad_x = np.gradient(field)
+    grad_mag = np.sqrt(grad_y**2 + grad_x**2)
+    
+    print(f"    完成: max={field.max():.4f}, "
+          f"walkable mean={field[mask].mean():.4f}, coverage(>0.001)={walkable_coverage*100:.1f}%")
+    print(f"    梯度: mean={grad_mag[mask].mean():.6f}, max={grad_mag.max():.4f}")
+    
+    return field.astype(np.float32)
+
+
+def compute_potential_navigation(
+    potential_field: np.ndarray,
+    walkable_mask: np.ndarray,
+) -> tuple:
+    """
+    从势能场计算导航方向（保留流量权重信息）。
+    
+    使用势能场的梯度方向。由于使用引力场叠加方法，梯度在所有位置都非零。
+    
+    返回：(nav_y, nav_x) 归一化的导航方向
+    """
+    H, W = potential_field.shape
+    walkable_bool = walkable_mask > 0
+    
+    # === 1. 计算势能场的梯度 ===
+    grad_y, grad_x = np.gradient(potential_field)
+    
+    # 梯度方向（指向势能增大的方向，即 sink）
+    nav_y = grad_y.copy()
+    nav_x = grad_x.copy()
+    
+    # 归一化
+    mag = np.sqrt(nav_y**2 + nav_x**2) + 1e-9
+    nav_y = nav_y / mag
+    nav_x = nav_x / mag
+    
+    # === 2. 非 walkable 区域：指向最近的 walkable 点（用于脱困）===
+    dist_to_walkable = distance_transform_edt(~walkable_bool)
+    off_grad_y, off_grad_x = np.gradient(dist_to_walkable)
+    off_nav_y = -off_grad_y
+    off_nav_x = -off_grad_x
+    off_mag = np.sqrt(off_nav_y**2 + off_nav_x**2) + 1e-9
+    off_nav_y = off_nav_y / off_mag
+    off_nav_x = off_nav_x / off_mag
+    
+    non_walkable = ~walkable_bool
+    nav_y[non_walkable] = off_nav_y[non_walkable]
+    nav_x[non_walkable] = off_nav_x[non_walkable]
+    
+    # 统计
+    grad_mag = np.sqrt(grad_y**2 + grad_x**2)
+    print(f"  势能导航场: 梯度 mean={grad_mag[walkable_bool].mean():.6f}, "
+          f"min={grad_mag[walkable_bool].min():.6f}")
+    
+    walkable_nav_mag = np.sqrt(nav_y[walkable_bool]**2 + nav_x[walkable_bool]**2)
+    valid_ratio = (walkable_nav_mag > 0.5).sum() / walkable_bool.sum()
+    print(f"  势能导航场: walkable 区域有效方向比例 = {valid_ratio*100:.1f}%")
+    
+    return nav_y.astype(np.float32), nav_x.astype(np.float32)
+
+
 def solve_field(
     walkable_mask: np.ndarray,
     target_density: np.ndarray,
@@ -186,12 +308,17 @@ def solve_field(
     clamp_min: float | None = 0.0,
     clamp_max: float | None = None,
     normalize: bool = True,
-    use_distance_field: bool = True,
+    use_distance_field: bool = False,
+    use_potential_field: bool = True,
 ):
     """
     便捷封装：扩散 -> 梯度 -> score。
-    如果 use_distance_field=True，则使用距离场计算导航方向（更稳定）。
-    返回 dict，包括 smooth_field、grad、score。
+    
+    导航场计算方式：
+    - use_potential_field=True (默认): 使用势能场，保留流量权重
+    - use_distance_field=True: 使用距离场，只考虑最近 sink
+    
+    返回 dict，包括 smooth_field、grad、score、nav 等。
     """
     smooth = diffuse_density(
         target_density,
@@ -207,8 +334,14 @@ def solve_field(
     
     result = {"smooth_field": smooth, "grad": grad, "score": score}
     
-    if use_distance_field:
-        # 额外计算基于距离场的导航方向
+    if use_potential_field:
+        # 使用势能场计算导航方向（保留流量权重）
+        potential = compute_potential_field(target_density, walkable_mask)
+        nav_y, nav_x = compute_potential_navigation(potential, walkable_mask)
+        result["potential_field"] = potential
+        result["nav"] = (nav_y, nav_x)
+    elif use_distance_field:
+        # 使用距离场计算导航方向（只考虑最近 sink）
         dist_field = compute_distance_field(target_density, walkable_mask, threshold=0.001)
         nav_y, nav_x = compute_navigation_field(dist_field, walkable_mask)
         result["distance_field"] = dist_field

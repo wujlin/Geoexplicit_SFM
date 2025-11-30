@@ -34,9 +34,10 @@ def step_kernel(
     wall_dist_thresh,
     wall_push_strength,
     off_road_recovery,
+    momentum=0.7,
 ):
     """
-    过阻尼 Langevin 动力学，带墙壁斥力和掉网恢复。
+    过阻尼 Langevin 动力学，带墙壁斥力、掉网恢复和动量。
     
     - field: (2, H, W) 归一化的导航方向场
     - sdf: 有符号距离场（可行区正值，非可行区负值）
@@ -44,6 +45,7 @@ def step_kernel(
     - wall_dist_thresh: 离边界多近开始斥力
     - wall_push_strength: 斥力强度
     - off_road_recovery: 掉网时的恢复推力
+    - momentum: 动量系数（0=无惯性，1=完全惯性）
     """
     N = pos.shape[0]
     H, W = sdf.shape
@@ -53,6 +55,7 @@ def step_kernel(
             continue
             
         y, x = pos[i, 0], pos[i, 1]
+        prev_vy, prev_vx = vel[i, 0], vel[i, 1]
         
         # 边界 clamp（防止越界）
         y = max(1.0, min(y, H - 2.0))
@@ -77,11 +80,11 @@ def step_kernel(
         grad_mag = np.sqrt(grad_y * grad_y + grad_x * grad_x) + 1e-6
         
         if not is_on_road:
-            # 掉网：用 SDF 梯度回到可行区
-            # SDF 梯度指向可行区内部（因为可行区 SDF 更大）
+            # 掉网：只用 SDF 梯度回到可行区，忽略导航力
             wall_vy = (grad_y / grad_mag) * off_road_recovery
             wall_vx = (grad_x / grad_mag) * off_road_recovery
-            # 导航场在非可行区已经有指向道路的方向，不需要抑制
+            nav_vy = 0.0
+            nav_vx = 0.0
             
         elif dist < wall_dist_thresh:
             # 靠近边界：柔性斥力，推向可行区内部
@@ -93,16 +96,27 @@ def step_kernel(
         ny = noise_sigma * np.random.randn()
         nx = noise_sigma * np.random.randn()
         
-        # === 4. 合成速度并积分 ===
-        eff_vy = nav_vy + wall_vy + ny
-        eff_vx = nav_vx + wall_vx + nx
+        # === 4. 目标速度 ===
+        target_vy = nav_vy + wall_vy + ny
+        target_vx = nav_vx + wall_vx + nx
         
-        # 速度限制（防止过大跳跃）
+        # === 5. 动量混合 ===
+        # 新速度 = momentum * 旧速度 + (1-momentum) * 目标速度
+        eff_vy = momentum * prev_vy + (1.0 - momentum) * target_vy
+        eff_vx = momentum * prev_vx + (1.0 - momentum) * target_vx
+        
+        # 速度限制
         speed = np.sqrt(eff_vy * eff_vy + eff_vx * eff_vx)
         max_speed = v0 * 2.0
         if speed > max_speed:
             eff_vy = eff_vy / speed * max_speed
             eff_vx = eff_vx / speed * max_speed
+        
+        # 确保最小速度（防止停滞）
+        if speed < 0.1 and is_on_road:
+            # 如果速度太低但在道路上，直接使用导航方向
+            eff_vy = nav_vy
+            eff_vx = nav_vx
         
         # 位置更新
         new_y = y + eff_vy * dt
@@ -111,6 +125,27 @@ def step_kernel(
         # 边界约束
         new_y = max(1.0, min(new_y, H - 2.0))
         new_x = max(1.0, min(new_x, W - 2.0))
+        
+        # === 6. 道路约束：如果新位置脱离道路，尝试沿道路方向步进 ===
+        new_yi = int(new_y)
+        new_xi = int(new_x)
+        if sdf[new_yi, new_xi] < 0:
+            best_y, best_x = y, x
+            best_dot = -2.0
+            
+            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                cny = yi + dy
+                cnx = xi + dx
+                if 0 <= cny < H and 0 <= cnx < W:
+                    if sdf[cny, cnx] > 0:
+                        dot = dy * eff_vy + dx * eff_vx
+                        if dot > best_dot:
+                            best_dot = dot
+                            best_y = float(cny)
+                            best_x = float(cnx)
+            
+            new_y = best_y
+            new_x = best_x
         
         pos[i, 0] = new_y
         pos[i, 1] = new_x

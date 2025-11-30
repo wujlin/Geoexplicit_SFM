@@ -25,7 +25,8 @@ def main():
         "clamp_min": 0.0,
         "clamp_max": None,
         "normalize": True,
-        "use_distance_field": True,  # 启用距离场导航
+        "use_potential_field": True,   # 使用势能场（保留流量权重）
+        "use_distance_field": False,   # 不使用距离场
     }
     out = solve_field(mask, density, **params)
     field = out["smooth_field"]
@@ -36,7 +37,7 @@ def main():
     np.savez(config.GRAD_BASELINE_PATH, grad_y=grad_y, grad_x=grad_x)
     np.savez(config.SCORE_BASELINE_PATH, score_y=score_y, score_x=score_x)
     
-    # 保存基于距离场的导航方向
+    # 保存导航场
     if "nav" in out:
         nav_y, nav_x = out["nav"]
         np.savez(config.OUTPUT_DIR / "nav_baseline.npz", nav_y=nav_y, nav_x=nav_x)
@@ -45,6 +46,14 @@ def main():
         print(f"导航场统计: magnitude range=[{nav_mag.min():.4f}, {nav_mag.max():.4f}], "
               f"mean={nav_mag.mean():.4f}, >0.5 ratio={(nav_mag > 0.5).mean()*100:.1f}%")
     
+    # 保存势能场（用于调试）
+    if "potential_field" in out:
+        np.save(config.OUTPUT_DIR / "potential_field.npy", out["potential_field"])
+        pot = out["potential_field"]
+        print(f"保存势能场: potential_field.npy, range=[{pot.min():.4f}, {pot.max():.4f}], "
+              f"mean={pot.mean():.6f}")
+    
+    # 保存距离场（如果有）
     if "distance_field" in out:
         np.save(config.OUTPUT_DIR / "distance_field.npy", out["distance_field"])
         print(f"保存距离场: distance_field.npy, range=[{out['distance_field'].min():.1f}, {out['distance_field'].max():.1f}]")

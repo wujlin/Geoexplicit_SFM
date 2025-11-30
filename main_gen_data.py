@@ -74,6 +74,7 @@ def main(n_agents=None, n_steps=None):
             config.WALL_DIST_THRESH,
             config.WALL_PUSH_STRENGTH,
             config.OFF_ROAD_RECOVERY,
+            config.MOMENTUM,
         )
 
         recorder.collect(pos, vel)
