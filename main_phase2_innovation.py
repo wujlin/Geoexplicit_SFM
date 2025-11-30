@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import numpy as np
 import torch
 
@@ -6,15 +9,25 @@ from src.phase2.common.visualizer import plot_score_samples
 from src.phase2.innovation.network import UNetSmall
 
 
-def load_model(device: torch.device):
-    model = UNetSmall(in_channels=2, base_channels=32).to(device)
-    state = torch.load(config.INNOVATION_MODEL_PATH, map_location=device)
+def load_model(device: torch.device, model_path: Path = config.INNOVATION_MODEL_PATH):
+    model_path = Path(model_path)
+    base_channels = 32
+    meta_path = Path(str(model_path) + ".json")
+    if meta_path.exists():
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            base_channels = int(meta.get("base_channels", base_channels))
+        except Exception:
+            pass
+    model = UNetSmall(in_channels=2, base_channels=base_channels).to(device)
+    state = torch.load(model_path, map_location=device)
     model.load_state_dict(state)
     model.eval()
     return model
 
 
-def infer_full_field(model: torch.nn.Module, mask: np.ndarray, density: np.ndarray, device: torch.device | str = "cpu"):
+def infer_full_field(model: torch.nn.Module, mask: np.ndarray, density: np.ndarray, device):
     inp = np.stack([mask.astype(np.float32), density.astype(np.float32)], axis=0)
     with torch.no_grad():
         pred = model(torch.from_numpy(inp[None]).to(device))

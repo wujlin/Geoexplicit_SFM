@@ -50,7 +50,7 @@ class ScoreDataset(Dataset):
         self,
         density: np.ndarray,
         mask: np.ndarray,
-        sigma: float = 3.5,
+        sigma: float = 10.0,
         n_samples: int = 50000,
         seed: int = 42,
     ):
@@ -70,11 +70,12 @@ class ScoreDataset(Dataset):
 
     def __getitem__(self, idx):
         y0, x0 = _sample_indices_from_density(self.density, self.rng)
-        noise = self.rng.normal(loc=0.0, scale=self.sigma, size=2)
-        y_noisy = float(np.clip(y0 + noise[0], 0, self.h - 1))
-        x_noisy = float(np.clip(x0 + noise[1], 0, self.w - 1))
+        epsilon = self.rng.normal(loc=0.0, scale=1.0, size=2).astype(np.float32)
+        y_noisy = float(np.clip(y0 + epsilon[0] * self.sigma, 0, self.h - 1))
+        x_noisy = float(np.clip(x0 + epsilon[1] * self.sigma, 0, self.w - 1))
 
-        target_vec = np.array([(y0 - y_noisy) / (self.sigma**2), (x0 - x_noisy) / (self.sigma**2)], dtype=np.float32)
+        # 预测噪声本身（带负号表示恢复方向），避免数值过小坍缩
+        target_vec = -1.0 * epsilon
         coord = np.array([y_noisy, x_noisy], dtype=np.float32)
         return torch.from_numpy(self.static_input), torch.from_numpy(target_vec), torch.from_numpy(coord)
 
@@ -100,7 +101,7 @@ class TrainConfig:
     batch_size: int = 8
     lr: float = 1e-3
     num_steps: int = 5000
-    sigma: float = 3.5
+    sigma: float = 10.0
     log_interval: int = 200
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     num_workers: int = 4
@@ -202,7 +203,7 @@ def _parse_cli_args():
     parser.add_argument("--batch", type=int, default=128)
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--sigma", type=float, default=3.5)
+    parser.add_argument("--sigma", type=float, default=10.0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--base_channels", type=int, default=32)
