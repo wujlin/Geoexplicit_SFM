@@ -39,58 +39,55 @@ def step_kernel(
     field,
     sdf,
     dt,
-    tau,
+    tau,  # 过阻尼模式下未使用
     noise_sigma,
     v0,
     respawn_radius,
-    pixel_scale,
+    pixel_scale,  # 过阻尼模式下未使用
 ):
     """
-    pos, vel: (N,2)
-    active: (N,)
-    field: (2,H,W) - score/导航场
-    sdf: (H,W) - distance transform，正值在可行走区域
-    墙壁斥力：基于 sdf 梯度，避免掉出路网
+    过阻尼 Langevin：直接用场作为速度，加入噪声，靠近边界时用 SDF 梯度推回。
     """
     N = pos.shape[0]
     H, W = sdf.shape
-    WALL_STIFFNESS = 5.0
+    PUSH_BACK = 1.0
     for i in numba.prange(N):
         if not active[i]:
             continue
         y, x = pos[i, 0], pos[i, 1]
-        fy, fx = bilinear_sample(field, y, x)
-        mag = np.sqrt(fy * fy + fx * fx) + 1e-9
+        vy, vx = bilinear_sample(field, y, x)
+        mag = np.sqrt(vy * vy + vx * vx) + 1e-9
         if mag > 1e-3:
-            fy /= mag
-            fx /= mag
+            vy = (vy / mag) * v0
+            vx = (vx / mag) * v0
+        else:
+            vy, vx = 0.0, 0.0
 
-        # 墙壁斥力：SDF 梯度指向路心
         yi = int(y)
         xi = int(x)
         yi = 1 if yi < 1 else (H - 2 if yi > H - 2 else yi)
         xi = 1 if xi < 1 else (W - 2 if xi > W - 2 else xi)
-        grad_y = (sdf[yi + 1, xi] - sdf[yi - 1, xi]) * 0.5
-        grad_x = (sdf[yi, xi + 1] - sdf[yi, xi - 1]) * 0.5
         dist = sdf[yi, xi]
-        f_wall_y = 0.0
-        f_wall_x = 0.0
-        # 收紧触发阈值，路宽约1px，仅在接近掉出时施加斥力
-        if dist < 0.8:
-            strength = WALL_STIFFNESS * (0.8 - dist)
-            f_wall_y = grad_y * strength
-            f_wall_x = grad_x * strength
+        wall_vy, wall_vx = 0.0, 0.0
+        if dist < 1.0:
+            grad_y = (sdf[yi + 1, xi] - sdf[yi - 1, xi]) * 0.5
+            grad_x = (sdf[yi, xi + 1] - sdf[yi, xi - 1]) * 0.5
+            push = (1.0 - dist) * PUSH_BACK / dt
+            wall_vy = grad_y * push
+            wall_vx = grad_x * push
 
         ny = noise_sigma * np.random.randn()
         nx = noise_sigma * np.random.randn()
 
-        vel[i, 0] += ((fy * v0 - vel[i, 0]) / tau + f_wall_y) * dt + ny * np.sqrt(dt)
-        vel[i, 1] += ((fx * v0 - vel[i, 1]) / tau + f_wall_x) * dt + nx * np.sqrt(dt)
+        eff_vy = vy + wall_vy + ny
+        eff_vx = vx + wall_vx + nx
 
-        pos[i, 0] += (vel[i, 0] * dt) / pixel_scale
-        pos[i, 1] += (vel[i, 1] * dt) / pixel_scale
+        pos[i, 0] += eff_vy * dt
+        pos[i, 1] += eff_vx * dt
 
-        # 边界裁剪
+        vel[i, 0] = eff_vy
+        vel[i, 1] = eff_vx
+
         if pos[i, 0] < 0.1:
             pos[i, 0] = 0.1
         if pos[i, 0] > H - 1.1:
