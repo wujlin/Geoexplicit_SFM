@@ -45,3 +45,13 @@
 - 目录：`src/phase3/`（config、core/environment & physics、simulation/spawner/engine/recorder），入口 `main_gen_data.py`。
 - 输出：`data/output/trajectories.h5`，包含大规模 `(pos, vel)` 时间序列；粒子池重生模式、环形缓冲写盘。
 - 物理内核：过阻尼 Langevin（无惯性），直接用场方向+噪声更新位置，靠 SDF 梯度轻推回路网；当前关键参数 `V0=5.0`，`NOISE_SIGMA=0.2`，`GRID_RES_M=100.0`，`DT=0.5`。可视化脚本支持断开重生跳线。
+
+## Phase 3 问题诊断与修复（近期）
+- 导航场误用：曾加载 `field_baseline.npy`（标量），现改为方向场（score 或距离场负梯度）。
+- 场强过弱：原 score 场多数像素模长极小，改用测地距离场负梯度/最近邻方向。
+- 掉网/积灰：非 walkable 区导航为零，加入 SDF 恢复力，非 walkable 区推回路网。
+- Sink 生成：spawner 排除 dist=0 的 sink 区（有效采样域限制）。
+- 插值抵消：1px 路网双线性可能抵消，改用最近邻/最小邻居方向。
+- 边界梯度污染：中心差分受 mask 影响，改用最小邻居距离方向。
+- 当前指标（1px 路网，2000步）：到达率 ~45.7%，平均位移 ~62.4 像素，on-road ~50%，速度均值 ~2.3 px/frame。
+- 后续可选：膨胀 walkable mask、调整恢复力、使用 8 邻域导航。
