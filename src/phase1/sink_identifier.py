@@ -22,6 +22,22 @@ def apply_pareto_filter(df_flow: pd.DataFrame, threshold: float) -> pd.DataFrame
     return filtered.drop(columns=["cum_ratio"])
 
 
+def filter_by_flow_threshold(df_flow: pd.DataFrame, quantile: float | None = None, min_value: float | None = None):
+    """
+    按分位数和/或绝对阈值过滤低流量点。
+    返回过滤后的 df 和使用的阈值。
+    """
+    threshold = None
+    if quantile is not None:
+        threshold = df_flow["total_inflow"].quantile(quantile)
+    if min_value is not None:
+        threshold = max(threshold or -np.inf, min_value)
+    if threshold is None:
+        return df_flow.copy(), None
+    filtered = df_flow[df_flow["total_inflow"] >= threshold].copy()
+    return filtered, threshold
+
+
 def _haversine_dbscan(coords_latlon_deg: np.ndarray, eps_km: float, min_samples: int) -> np.ndarray:
     """
     使用 Haversine 距离的 DBSCAN；输入为 (n,2) 的经纬度（度）。
@@ -37,7 +53,7 @@ def cluster_sinks(df_highflow: pd.DataFrame, eps_km: float, min_samples: int) ->
     """
     对帕累托筛选后的点进行空间聚类，输出每个 cluster 的流量加权中心。
     需要列: centroid_lat, centroid_lon, total_inflow
-    返回列: cluster_id, lat, lon, total_flow
+    返回列: cluster_id, lat, lon, total_flow, n_points
     """
     coords = df_highflow[["centroid_lat", "centroid_lon"]].to_numpy()
     labels = _haversine_dbscan(coords, eps_km=eps_km, min_samples=min_samples)
@@ -60,10 +76,11 @@ def cluster_sinks(df_highflow: pd.DataFrame, eps_km: float, min_samples: int) ->
                 "lat": lat_center,
                 "lon": lon_center,
                 "total_flow": wsum,
+                "n_points": len(df_c),
             }
         )
 
     return pd.DataFrame(clusters)
 
 
-__all__ = ["apply_pareto_filter", "cluster_sinks"]
+__all__ = ["apply_pareto_filter", "filter_by_flow_threshold", "cluster_sinks"]

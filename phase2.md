@@ -171,23 +171,6 @@ $$\nabla \cdot (D(\mathbf{x}) \nabla \rho) = -\rho_{target}(\mathbf{x})$$
 
 -----
 
-## 5\. 给 Codex 的 Prompt 建议
-
-**启动 Phase 2 开发时，请发送以下指令**：
-
-> "这是 Phase 2 的开发文档。我们将采用双轨制：Baseline 使用 PDE 求解，Innovation 使用 Neural Network。
-> 请先帮我完成 **Step 1: Common Infrastructure**。
-> 我需要 `geo_rasterizer.py`，它需要从 OSM 下载路网，并结合 Phase 1 的 Sinks 生成路网掩膜和目标密度图。"
-
-**完成 Baseline 后，发送**：
-
-> "现在开始 Track A: Baseline。请实现 `pde_solver.py`，使用有限差分法在 `walkable_mask` 上对 `target_density` 进行平滑扩散，并计算梯度场。"
-
-**完成 Innovation 时，发送**：
-
-> "现在开始 Track B: Innovation。我们要训练一个 UNet 来学习 Score Field。
-> 请实现 `network.py` 和 `trainer.py`。
-> 训练逻辑是：从 `target_density` 中采样点位置，加高斯噪声，训练网络预测噪声方向 (Denoising Score Matching)。"
 
 -----
 

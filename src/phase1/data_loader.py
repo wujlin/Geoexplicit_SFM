@@ -12,7 +12,7 @@ from typing import Tuple
 import geopandas as gpd
 import pandas as pd
 
-TRACT_ID_CANDIDATES = ["w_tract", "w_geocode", "GEOID", "GEOID20", "geoid"]
+TRACT_ID_CANDIDATES = ["w_tract", "w_geocode", "work", "GEOID", "GEOID20", "geoid"]
 
 
 def _choose_column(columns, candidates) -> str:
@@ -34,7 +34,7 @@ def load_od_data(filepath: Path) -> pd.DataFrame:
     返回列: tract_id, total_inflow
     """
     df = pd.read_csv(filepath)
-    tract_col = _choose_column(df.columns, ["w_tract", "w_geocode"])
+    tract_col = _choose_column(df.columns, ["w_tract", "w_geocode", "work"])
     flow_col = _choose_column(df.columns, ["S000", "s000", "TOTAL_JOBS"])  # 兼容大小写
 
     df["tract_id"] = _normalize_geoid(df[tract_col])
@@ -43,7 +43,11 @@ def load_od_data(filepath: Path) -> pd.DataFrame:
     return agg[["tract_id", "total_inflow"]]
 
 
-def load_geo_data(filepath: Path, target_crs: str = "EPSG:4326") -> gpd.GeoDataFrame:
+def load_geo_data(
+    filepath: Path,
+    target_crs: str = "EPSG:4326",
+    projected_crs: str = "EPSG:3857",
+) -> gpd.GeoDataFrame:
     """
     读取 Tract Shapefile/zip，计算质心，输出列: tract_id, geometry, centroid_lat, centroid_lon
     """
@@ -51,9 +55,14 @@ def load_geo_data(filepath: Path, target_crs: str = "EPSG:4326") -> gpd.GeoDataF
     tract_col = _choose_column(gdf.columns, ["GEOID", "GEOID20", "geoid"])
     gdf = gdf.to_crs(target_crs)
     gdf["tract_id"] = _normalize_geoid(gdf[tract_col])
-    gdf["centroid"] = gdf.geometry.centroid
-    gdf["centroid_lon"] = gdf["centroid"].x
-    gdf["centroid_lat"] = gdf["centroid"].y
+
+    # 使用投影坐标计算质心，避免地理 CRS 警告
+    gdf_proj = gdf.to_crs(projected_crs)
+    centroids_proj = gdf_proj.geometry.centroid
+    centroids = gpd.GeoSeries(centroids_proj, crs=projected_crs).to_crs(target_crs)
+    gdf["centroid"] = centroids
+    gdf["centroid_lon"] = centroids.x
+    gdf["centroid_lat"] = centroids.y
     return gdf[["tract_id", "geometry", "centroid_lat", "centroid_lon"]]
 
 
@@ -63,4 +72,11 @@ def merge_flow_with_geo(df_flow: pd.DataFrame, gdf_geo: gpd.GeoDataFrame) -> gpd
     return merged
 
 
-__all__: Tuple[str, ...] = ("load_od_data", "load_geo_data", "merge_flow_with_geo")
+def filter_by_counties(df: pd.DataFrame, county_fips: list[str], tract_col: str = "tract_id") -> pd.DataFrame:
+    """按 county 前 5 位 FIPS 过滤 tract。"""
+    if not county_fips:
+        return df
+    return df[df[tract_col].str[:5].isin(county_fips)].copy()
+
+
+__all__: Tuple[str, ...] = ("load_od_data", "load_geo_data", "merge_flow_with_geo", "filter_by_counties")
