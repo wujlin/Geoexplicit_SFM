@@ -108,7 +108,11 @@ class TrainConfig:
     sigma: float = 4.0
     query_sigma: float = 2.0
     log_interval: int = 100
-    device: str = "cpu"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    num_workers: int = 4
+    pin_memory: bool = True
+    base_channels: int = 32
+    amp: bool = True  # 混合精度加速
 
 
 def train_dsm(
@@ -128,11 +132,20 @@ def train_dsm(
         query_sigma=cfg.query_sigma,
         n_samples=cfg.num_steps * cfg.batch_size,
     )
-    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, num_workers=0, drop_last=True)
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        num_workers=cfg.num_workers,
+        pin_memory=cfg.pin_memory,
+        drop_last=True,
+        persistent_workers=cfg.num_workers > 0,
+    )
 
     device = torch.device(cfg.device)
-    model = UNetSmall(in_channels=3, base_channels=32).to(device)
+    model = UNetSmall(in_channels=3, base_channels=cfg.base_channels).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    scaler = torch.cuda.amp.GradScaler(enabled=cfg.amp and device.type == "cuda")
 
     iterator = loader
     if tqdm is not None:
@@ -140,17 +153,20 @@ def train_dsm(
 
     global_step = 0
     for batch in iterator:
-        opt.zero_grad()
+        opt.zero_grad(set_to_none=True)
         inp, target_vec, coords = batch
-        inp = inp.to(device)
-        target_vec = target_vec.to(device)
-        coords = coords.to(device)
+        inp = inp.to(device, non_blocking=True)
+        target_vec = target_vec.to(device, non_blocking=True)
+        coords = coords.to(device, non_blocking=True)
 
-        pred_field = model(inp)
-        pred_vec = _sample_pred_at_coords(pred_field, coords)
-        loss = ((pred_vec - target_vec) ** 2).sum(dim=1).mean()
-        loss.backward()
-        opt.step()
+        with torch.cuda.amp.autocast(enabled=cfg.amp and device.type == "cuda"):
+            pred_field = model(inp)
+            pred_vec = _sample_pred_at_coords(pred_field, coords)
+            loss = ((pred_vec - target_vec) ** 2).sum(dim=1).mean()
+
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
 
         if global_step % cfg.log_interval == 0:
             print(f"[step {global_step}] loss={loss.item():.6f}")
