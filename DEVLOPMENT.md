@@ -32,19 +32,19 @@
 - 依赖更新：`requirements.txt` 增加 osmnx、rasterio、scipy。
 
 ## Step 1.5: Baseline Solver Scaffold
-- 新增 `src/phase2/baseline/pde_solver.py`：有限差分扩散、梯度/score 计算，封装 `solve_field`。
-- `geo_rasterizer` 支持本地路网（`dataset/geo/MI_road_cleaned.shp/...`），已生成 `walkable_mask.npy`、归一化的 `target_density.npy`。
+- 新增 `src/phase2/baseline/pde_solver.py`：加权引力场叠加，`phi(x)=sum_i w_i/(1+alpha*d_i)`，梯度归一化为导航方向 (score)。
+- `geo_rasterizer` 支持本地路网（`dataset/geo/MI_road_cleaned.shp/...`），已生成 `walkable_mask.npy`、`target_density.npy`。
 
 ## 当前策略
-- 仅保留 Baseline 为 Phase2 最终产物：`field_baseline.npy`、梯度/score npz、`baseline_field.png`。
+- 仅保留 Baseline 为 Phase2 最终产物：导航方向场 `score_baseline.npz`（加权引力梯度），可视化 `baseline_field.png`。
 - Track B Innovation 暂停/退出 Phase2，Diffusion 计划放到 Phase4。
 - Comparison 仅用于 Baseline 可视化检查。
 
 # Phase 3 规划（数据工厂）
-- 目标：基于 Baseline 导航场 + 过阻尼 Langevin 噪声，Numba 加速批量生成合成轨迹，供 Phase4 Diffusion 训练。
+- 目标：基于 Baseline 导航场（方向场）+ 带动量/约束的 Langevin，Numba 加速批量生成合成轨迹，供 Phase4 Diffusion 训练。
 - 目录：`src/phase3/`（config、core/environment & physics、simulation/spawner/engine/recorder），入口 `main_gen_data.py`。
 - 输出：`data/output/trajectories.h5`，包含大规模 `(pos, vel)` 时间序列；粒子池重生模式、环形缓冲写盘。
-- 物理内核：过阻尼 Langevin（无惯性），直接用场方向+噪声更新位置，靠 SDF 梯度轻推回路网；当前关键参数 `V0=5.0`，`NOISE_SIGMA=0.2`，`GRID_RES_M=100.0`，`DT=0.5`。可视化脚本支持断开重生跳线。
+- 物理内核（技术总结版）：带动量 Langevin + 道路约束，导航方向采用最近邻/距离场梯度；掉网恢复用 SDF 推回。参考参数：`V0≈1.5 px/步`，`DT=1.0`，`NOISE_SIGMA≈0.05`，`MOMENTUM≈0.85`，`WALL_PUSH≈2.0`，`OFF_ROAD_RECOVERY≈5.0`。可视化脚本支持断开重生跳线。
 
 ## Phase 3 问题诊断与修复（近期）
 - 导航场误用：曾加载 `field_baseline.npy`（标量），现改为方向场（score 或距离场负梯度）。

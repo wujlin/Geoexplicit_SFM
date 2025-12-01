@@ -89,6 +89,19 @@ class DiffusionPolicyInference:
     
     def _load_model(self):
         """加载模型和配置"""
+        import sys
+        import numpy as np
+        
+        # 修复 numpy 2.x 与 1.x 的兼容性问题
+        # numpy 2.x 使用 numpy._core，1.x 使用 numpy.core
+        if not hasattr(np, '_core'):
+            # 旧版 numpy，创建别名
+            sys.modules['numpy._core'] = np.core
+            sys.modules['numpy._core.multiarray'] = np.core.multiarray
+            sys.modules['numpy._core.numeric'] = np.core.numeric
+            sys.modules['numpy._core._multiarray_umath'] = getattr(np.core, '_multiarray_umath', np.core.multiarray)
+            logger.info("Applied numpy compatibility patch")
+        
         checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
         
         self.config = checkpoint["config"]
@@ -161,7 +174,7 @@ class DiffusionPolicyInference:
         walkable_mask: np.ndarray,
         max_steps: int = 500,
         num_action_samples: int = 1,
-        action_horizon: int = 1,  # MPC 执行多少步
+        action_horizon: int = 4,  # MPC 执行多少步（增大以减少推理次数）
     ) -> np.ndarray:
         """
         闭环仿真
@@ -171,7 +184,7 @@ class DiffusionPolicyInference:
             walkable_mask: (H, W) 可行走区域
             max_steps: 最大步数
             num_action_samples: 每次预测采样数
-            action_horizon: 每次执行多少步预测动作
+            action_horizon: 每次执行多少步预测动作（增大可加速）
         
         Returns:
             trajectory: (T, 2) 轨迹
@@ -187,8 +200,9 @@ class DiffusionPolicyInference:
         vel_history = [vel.copy() for _ in range(history)]
         
         trajectory = [pos.copy()]
+        step = 0
         
-        for step in range(max_steps):
+        while step < max_steps:
             # 构建 obs
             obs = np.concatenate([
                 np.stack(pos_history[-history:], axis=0),  # (history, 2)
@@ -205,8 +219,11 @@ class DiffusionPolicyInference:
             else:
                 action_seq = actions[0]
             
-            # 执行动作（MPC 模式：只执行前几步）
+            # 执行动作（MPC 模式：执行 action_horizon 步）
             for i in range(min(action_horizon, len(action_seq))):
+                if step >= max_steps:
+                    break
+                    
                 vel = action_seq[i]
                 new_pos = pos + vel
                 
@@ -223,6 +240,7 @@ class DiffusionPolicyInference:
                 pos_history.append(pos.copy())
                 vel_history.append(vel.copy())
                 trajectory.append(pos.copy())
+                step += 1
         
         return np.array(trajectory)
 
@@ -264,9 +282,10 @@ def main():
     parser = argparse.ArgumentParser(description="Diffusion Policy Inference")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint")
     parser.add_argument("--num_agents", type=int, default=10, help="Number of agents")
-    parser.add_argument("--max_steps", type=int, default=500, help="Max steps per agent")
+    parser.add_argument("--max_steps", type=int, default=200, help="Max steps per agent")
     parser.add_argument("--use_ddim", action="store_true", default=True, help="Use DDIM")
-    parser.add_argument("--ddim_steps", type=int, default=20, help="DDIM steps")
+    parser.add_argument("--ddim_steps", type=int, default=10, help="DDIM steps (fewer = faster)")
+    parser.add_argument("--action_horizon", type=int, default=4, help="Steps to execute per prediction")
     parser.add_argument("--output", type=str, default=None, help="Output image path")
     
     args = parser.parse_args()
@@ -305,17 +324,18 @@ def main():
     start_indices = np.random.choice(len(walkable_points), args.num_agents, replace=False)
     start_positions = walkable_points[start_indices].astype(np.float32)
     
-    # 运行仿真
+    # 运行仿真（带进度条）
+    from tqdm import tqdm
     logger.info(f"Running simulation for {args.num_agents} agents...")
     trajectories = []
-    for i, start_pos in enumerate(start_positions):
+    for i, start_pos in enumerate(tqdm(start_positions, desc="Simulating")):
         traj = inferencer.simulate(
             start_pos=start_pos,
             walkable_mask=walkable_mask,
             max_steps=args.max_steps,
+            action_horizon=args.action_horizon,
         )
         trajectories.append(traj)
-        logger.info(f"Agent {i+1}/{args.num_agents}: {len(traj)} steps")
     
     # 可视化
     output_path = args.output or (PROJECT_ROOT / "data" / "output" / "diffusion_policy_trajectories.png")

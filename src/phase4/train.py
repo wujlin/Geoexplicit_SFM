@@ -101,10 +101,11 @@ class DiffusionPolicyTrainer:
         num_diffusion_steps: int = 100,
         beta_schedule: str = "linear",
         # 训练配置
-        batch_size: int = 256,
-        learning_rate: float = 1e-4,
-        num_epochs: int = 100,
+        batch_size: int = 2048,  # 增大 batch size 加速训练
+        learning_rate: float = 3e-4,  # 配合大 batch 提高 lr
+        num_epochs: int = 50,  # 减少 epochs，Diffusion 收敛快
         ema_decay: float = 0.9999,
+        max_samples_per_epoch: int = 1_000_000,  # 每 epoch 最多采样数
         # 其他
         device: str = "auto",
         checkpoint_dir: str | Path = None,
@@ -133,6 +134,7 @@ class DiffusionPolicyTrainer:
         self.learning_rate = learning_rate
         self.num_epochs = num_epochs
         self.ema_decay = ema_decay
+        self.max_samples_per_epoch = max_samples_per_epoch
         
         # 检查点目录
         self.checkpoint_dir = Path(checkpoint_dir or PROJECT_ROOT / "data" / "output" / "phase4_checkpoints")
@@ -162,7 +164,17 @@ class DiffusionPolicyTrainer:
             future=self.future,
         )
         
-        logger.info(f"Total samples: {len(full_dataset)}")
+        total_samples = len(full_dataset)
+        logger.info(f"Total samples in dataset: {total_samples:,}")
+        
+        # 如果数据集太大，进行采样
+        if self.max_samples_per_epoch and total_samples > self.max_samples_per_epoch * 1.2:
+            # 采样一部分数据用于训练
+            sample_size = int(self.max_samples_per_epoch * 1.1)  # 多采一点用于划分验证集
+            indices = np.random.choice(total_samples, sample_size, replace=False)
+            from torch.utils.data import Subset
+            full_dataset = Subset(full_dataset, indices)
+            logger.info(f"Sampled {sample_size:,} samples for training")
         
         # 划分训练/验证集
         val_size = int(len(full_dataset) * val_ratio)
@@ -174,7 +186,7 @@ class DiffusionPolicyTrainer:
             generator=torch.Generator().manual_seed(42)
         )
         
-        logger.info(f"Train samples: {train_size}, Val samples: {val_size}")
+        logger.info(f"Train samples: {train_size:,}, Val samples: {val_size:,}")
         
         # 计算归一化统计量（从训练集采样）
         logger.info("Computing normalization statistics...")
@@ -447,12 +459,13 @@ class DiffusionPolicyTrainer:
 def main():
     parser = argparse.ArgumentParser(description="Train Diffusion Policy")
     parser.add_argument("--h5_path", type=str, default=None, help="Path to trajectories.h5")
-    parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=2048, help="Batch size (larger = faster)")
+    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--history", type=int, default=2, help="History steps")
     parser.add_argument("--future", type=int, default=8, help="Future steps to predict")
     parser.add_argument("--diffusion_steps", type=int, default=100, help="Diffusion steps")
+    parser.add_argument("--max_samples", type=int, default=1_000_000, help="Max samples per epoch")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cuda/cpu)")
     
     args = parser.parse_args()
@@ -465,6 +478,7 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.lr,
         num_epochs=args.epochs,
+        max_samples_per_epoch=args.max_samples,
         device=args.device,
     )
     
