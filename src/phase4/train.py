@@ -22,6 +22,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
+from tqdm import tqdm
 
 # 添加项目根目录到路径
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -179,22 +180,28 @@ class DiffusionPolicyTrainer:
         logger.info("Computing normalization statistics...")
         self._compute_normalization(train_dataset)
         
+        # 根据平台选择 num_workers
+        import platform
+        num_workers = 4 if platform.system() != "Windows" else 0
+        
         # 创建 DataLoader
         self.train_loader = DataLoader(
             train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=0,  # Windows 下避免多进程问题
+            num_workers=num_workers,
             pin_memory=True if self.device.type == "cuda" else False,
             drop_last=True,
+            persistent_workers=True if num_workers > 0 else False,
         )
         
         self.val_loader = DataLoader(
             val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=0,
+            num_workers=num_workers,
             pin_memory=True if self.device.type == "cuda" else False,
+            persistent_workers=True if num_workers > 0 else False,
         )
     
     def _compute_normalization(self, dataset, sample_size: int = 10000):
@@ -381,10 +388,24 @@ class DiffusionPolicyTrainer:
             epoch_loss = 0.0
             num_batches = 0
             
-            for batch in self.train_loader:
+            # 使用 tqdm 显示进度条
+            pbar = tqdm(
+                self.train_loader, 
+                desc=f"Epoch {epoch+1}/{self.num_epochs}",
+                leave=False,
+                ncols=100
+            )
+            
+            for batch in pbar:
                 loss = self.train_step(batch)
                 epoch_loss += loss
                 num_batches += 1
+                
+                # 更新进度条显示
+                pbar.set_postfix({
+                    'loss': f'{loss:.4f}',
+                    'avg': f'{epoch_loss/num_batches:.4f}'
+                })
             
             avg_train_loss = epoch_loss / num_batches
             train_losses.append(avg_train_loss)
