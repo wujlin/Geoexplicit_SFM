@@ -1,6 +1,6 @@
 # Data and artifacts (keep repo lean; datasets are large and may include symlinks)
-dataset/
-data/
+/dataset/
+/data/
 v1/dataset/
 v1/data/
 v2/dataset/
