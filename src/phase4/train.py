@@ -25,20 +25,28 @@ from torch.utils.data import DataLoader, random_split
 
 # 添加项目根目录到路径
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+PHASE4_ROOT = Path(__file__).resolve().parent
 
-# 确保 src 目录也在路径中
-SRC_ROOT = PROJECT_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+# 直接导入模块（不依赖包结构）
+import importlib.util
 
-# 现在可以用简化的导入
-from phase4 import config
-from phase4.data.dataset import TrajectorySlidingWindow
-from phase4.data.normalizer import ActionNormalizer
-from phase4.diffusion.scheduler import DDPMScheduler
-from phase4.model.unet1d import UNet1D
+def _import_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+# 导入所需模块
+config = _import_module("config", PHASE4_ROOT / "config.py")
+dataset_module = _import_module("dataset", PHASE4_ROOT / "data" / "dataset.py")
+normalizer_module = _import_module("normalizer", PHASE4_ROOT / "data" / "normalizer.py")
+scheduler_module = _import_module("scheduler", PHASE4_ROOT / "diffusion" / "scheduler.py")
+unet_module = _import_module("unet1d", PHASE4_ROOT / "model" / "unet1d.py")
+
+TrajectorySlidingWindow = dataset_module.TrajectorySlidingWindow
+ActionNormalizer = normalizer_module.ActionNormalizer
+DDPMScheduler = scheduler_module.DDPMScheduler
+UNet1D = unet_module.UNet1D
 
 # 设置日志
 logging.basicConfig(
