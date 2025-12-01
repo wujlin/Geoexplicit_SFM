@@ -187,28 +187,38 @@ class DiffusionPolicyInference:
         self,
         start_pos: np.ndarray,
         walkable_mask: np.ndarray,
+        nav_field: np.ndarray = None,  # (2, H, W) 导航场方向
         max_steps: int = 500,
         num_action_samples: int = 1,
         action_horizon: int = 4,  # MPC 执行多少步（增大以减少推理次数）
+        nav_weight: float = 0.7,  # 导航场方向权重（0=纯模型，1=纯导航场）
     ) -> np.ndarray:
         """
-        闭环仿真
+        闭环仿真（混合模式：Diffusion预测速度大小 + 导航场提供方向）
         
         Args:
             start_pos: (2,) 起始位置
             walkable_mask: (H, W) 可行走区域
+            nav_field: (2, H, W) 导航场方向向量（可选）
             max_steps: 最大步数
             num_action_samples: 每次预测采样数
             action_horizon: 每次执行多少步预测动作（增大可加速）
+            nav_weight: 导航场方向权重，越大越依赖导航场方向
         
         Returns:
             trajectory: (T, 2) 轨迹
         """
         history = self.config["history"]
+        H, W = walkable_mask.shape
         
-        # 初始化状态
+        # 初始化状态（如果有导航场，用导航场方向初始化速度）
         pos = start_pos.copy()
-        vel = np.zeros(2)
+        if nav_field is not None:
+            iy, ix = int(np.clip(pos[0], 0, H-1)), int(np.clip(pos[1], 0, W-1))
+            nav_dir = nav_field[:, iy, ix]
+            vel = nav_dir * 0.8  # 初始速度沿导航方向
+        else:
+            vel = np.zeros(2)
         
         # 历史记录 (用于构建 obs)
         pos_history = [pos.copy() for _ in range(history)]
@@ -238,16 +248,39 @@ class DiffusionPolicyInference:
             for i in range(min(action_horizon, len(action_seq))):
                 if step >= max_steps:
                     break
+                
+                model_vel = action_seq[i]
+                model_speed = np.linalg.norm(model_vel)
+                
+                # 混合模式：用导航场方向 + 模型速度大小
+                if nav_field is not None and model_speed > 0.01:
+                    iy, ix = int(np.clip(pos[0], 0, H-1)), int(np.clip(pos[1], 0, W-1))
+                    nav_dir = nav_field[:, iy, ix]
+                    nav_norm = np.linalg.norm(nav_dir)
                     
-                vel = action_seq[i]
+                    if nav_norm > 0.01:
+                        # 归一化导航方向
+                        nav_dir = nav_dir / nav_norm
+                        # 归一化模型方向
+                        model_dir = model_vel / model_speed
+                        # 混合方向
+                        mixed_dir = nav_weight * nav_dir + (1 - nav_weight) * model_dir
+                        mixed_dir = mixed_dir / (np.linalg.norm(mixed_dir) + 1e-8)
+                        # 用模型预测的速度大小
+                        vel = mixed_dir * model_speed
+                    else:
+                        vel = model_vel
+                else:
+                    vel = model_vel
+                
                 new_pos = pos + vel
                 
                 # 边界检查
-                new_pos = np.clip(new_pos, [0, 0], [walkable_mask.shape[0]-1, walkable_mask.shape[1]-1])
+                new_pos = np.clip(new_pos, [0, 0], [H-1, W-1])
                 
                 # 可行走检查
-                ix, iy = int(new_pos[0]), int(new_pos[1])
-                if walkable_mask[ix, iy]:
+                iy_new, ix_new = int(new_pos[0]), int(new_pos[1])
+                if walkable_mask[iy_new, ix_new]:
                     pos = new_pos
                 # else: 保持原位
                 
@@ -301,6 +334,7 @@ def main():
     parser.add_argument("--use_ddim", action="store_true", default=True, help="Use DDIM")
     parser.add_argument("--ddim_steps", type=int, default=10, help="DDIM steps (fewer = faster)")
     parser.add_argument("--action_horizon", type=int, default=4, help="Steps to execute per prediction")
+    parser.add_argument("--nav_weight", type=float, default=0.7, help="Navigation field weight (0=pure model, 1=pure nav)")
     parser.add_argument("--output", type=str, default=None, help="Output image path")
     
     args = parser.parse_args()
@@ -326,6 +360,16 @@ def main():
     walkable_mask = np.load(mask_path)
     logger.info(f"Walkable mask shape: {walkable_mask.shape}")
     
+    # 加载导航场（混合模式的关键）
+    nav_path = PROJECT_ROOT / "data" / "processed" / "nav_baseline.npz"
+    nav_field = None
+    if nav_path.exists():
+        nav_data = np.load(nav_path)
+        nav_field = nav_data["nav"]  # (2, H, W)
+        logger.info(f"Loaded navigation field: shape={nav_field.shape}")
+    else:
+        logger.warning(f"Navigation field not found: {nav_path}, using pure model prediction")
+    
     # 创建推理器
     inferencer = DiffusionPolicyInference(
         checkpoint_path=args.checkpoint,
@@ -333,22 +377,38 @@ def main():
         ddim_steps=args.ddim_steps,
     )
     
-    # 随机选择起始点
+    # 随机选择起始点（优先选择离 sink 较远的点）
     walkable_points = np.argwhere(walkable_mask)
     np.random.seed(42)
-    start_indices = np.random.choice(len(walkable_points), args.num_agents, replace=False)
-    start_positions = walkable_points[start_indices].astype(np.float32)
+    
+    # 如果有导航场，优先选择高 nav magnitude 的点（离 sink 远）
+    if nav_field is not None:
+        nav_mag = np.sqrt(nav_field[0]**2 + nav_field[1]**2)
+        point_mags = nav_mag[walkable_points[:, 0], walkable_points[:, 1]]
+        # 选择 magnitude > 0.5 的点
+        good_points = walkable_points[point_mags > 0.5]
+        if len(good_points) >= args.num_agents:
+            indices = np.random.choice(len(good_points), args.num_agents, replace=False)
+            start_positions = good_points[indices].astype(np.float32)
+        else:
+            indices = np.random.choice(len(walkable_points), args.num_agents, replace=False)
+            start_positions = walkable_points[indices].astype(np.float32)
+    else:
+        indices = np.random.choice(len(walkable_points), args.num_agents, replace=False)
+        start_positions = walkable_points[indices].astype(np.float32)
     
     # 运行仿真（带进度条）
     from tqdm import tqdm
-    logger.info(f"Running simulation for {args.num_agents} agents...")
+    logger.info(f"Running simulation for {args.num_agents} agents (nav_weight={args.nav_weight})...")
     trajectories = []
     for i, start_pos in enumerate(tqdm(start_positions, desc="Simulating")):
         traj = inferencer.simulate(
             start_pos=start_pos,
             walkable_mask=walkable_mask,
+            nav_field=nav_field,
             max_steps=args.max_steps,
             action_horizon=args.action_horizon,
+            nav_weight=args.nav_weight,
         )
         trajectories.append(traj)
     
@@ -358,6 +418,7 @@ def main():
         trajectories=trajectories,
         walkable_mask=walkable_mask,
         save_path=output_path,
+        title=f"Diffusion Policy Trajectories (nav_weight={args.nav_weight})",
     )
     
     logger.info("Inference completed!")
