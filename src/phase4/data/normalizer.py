@@ -167,3 +167,81 @@ class ActionNormalizer:
         self.mode = state["mode"]
         self.normalizer.load_state_dict(state["normalizer"])
         return self
+
+
+class ObsNormalizer:
+    """
+    观测归一化器：分别对 position 和 velocity 归一化
+    obs shape: (history, 4) = (history, [pos_x, pos_y, vel_x, vel_y])
+    """
+    
+    def __init__(self, mode: str = "minmax"):
+        self.mode = mode
+        # 分别归一化 position 和 velocity
+        if mode == "minmax":
+            self.pos_normalizer = MinMaxNormalizer()
+            self.vel_normalizer = MinMaxNormalizer()
+        else:
+            self.pos_normalizer = ZScoreNormalizer()
+            self.vel_normalizer = ZScoreNormalizer()
+    
+    def fit(self, positions: np.ndarray, velocities: np.ndarray) -> "ObsNormalizer":
+        """
+        positions shape: (N, 2) 或 (N, T, 2)
+        velocities shape: (N, 2) 或 (N, T, 2)
+        """
+        pos_flat = positions.reshape(-1, 2)
+        vel_flat = velocities.reshape(-1, 2)
+        self.pos_normalizer.fit(pos_flat)
+        self.vel_normalizer.fit(vel_flat)
+        return self
+    
+    def transform(self, obs: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
+        """
+        obs shape: (..., history, 4) 或 (..., 4)
+        前2维是 position，后2维是 velocity
+        """
+        is_tensor = isinstance(obs, torch.Tensor)
+        
+        if is_tensor:
+            pos = obs[..., :2]
+            vel = obs[..., 2:]
+            pos_normed = self.pos_normalizer.transform(pos)
+            vel_normed = self.vel_normalizer.transform(vel)
+            return torch.cat([pos_normed, vel_normed], dim=-1)
+        else:
+            pos = obs[..., :2]
+            vel = obs[..., 2:]
+            pos_normed = self.pos_normalizer.transform(pos)
+            vel_normed = self.vel_normalizer.transform(vel)
+            return np.concatenate([pos_normed, vel_normed], axis=-1)
+    
+    def inverse_transform(self, obs: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
+        """反归一化"""
+        is_tensor = isinstance(obs, torch.Tensor)
+        
+        if is_tensor:
+            pos = obs[..., :2]
+            vel = obs[..., 2:]
+            pos_denorm = self.pos_normalizer.inverse_transform(pos)
+            vel_denorm = self.vel_normalizer.inverse_transform(vel)
+            return torch.cat([pos_denorm, vel_denorm], dim=-1)
+        else:
+            pos = obs[..., :2]
+            vel = obs[..., 2:]
+            pos_denorm = self.pos_normalizer.inverse_transform(pos)
+            vel_denorm = self.vel_normalizer.inverse_transform(vel)
+            return np.concatenate([pos_denorm, vel_denorm], axis=-1)
+    
+    def state_dict(self) -> dict:
+        return {
+            "mode": self.mode,
+            "pos_normalizer": self.pos_normalizer.state_dict(),
+            "vel_normalizer": self.vel_normalizer.state_dict(),
+        }
+    
+    def load_state_dict(self, state: dict) -> "ObsNormalizer":
+        self.mode = state["mode"]
+        self.pos_normalizer.load_state_dict(state["pos_normalizer"])
+        self.vel_normalizer.load_state_dict(state["vel_normalizer"])
+        return self

@@ -46,6 +46,7 @@ unet_module = _import_module("unet1d", PHASE4_ROOT / "model" / "unet1d.py")
 
 TrajectorySlidingWindow = dataset_module.TrajectorySlidingWindow
 ActionNormalizer = normalizer_module.ActionNormalizer
+ObsNormalizer = normalizer_module.ObsNormalizer
 DDPMScheduler = scheduler_module.DDPMScheduler
 UNet1D = unet_module.UNet1D
 
@@ -152,6 +153,7 @@ class DiffusionPolicyTrainer:
         self.train_loader = None
         self.val_loader = None
         self.action_normalizer = None
+        self.obs_normalizer = None  # 新增 obs 归一化器
     
     def setup_data(self, val_ratio: float = 0.1):
         """设置数据加载器"""
@@ -222,17 +224,34 @@ class DiffusionPolicyTrainer:
         indices = np.random.choice(len(dataset), sample_size, replace=False)
         
         actions = []
+        obs_list = []
         for idx in indices:
             sample = dataset[idx]
             actions.append(sample["action"].numpy())
+            obs_list.append(sample["obs"].numpy())
         
         actions = np.stack(actions, axis=0)  # (N, future, 2)
+        obs_arr = np.stack(obs_list, axis=0)  # (N, history, 4)
         
+        # Action 归一化
         self.action_normalizer = ActionNormalizer(mode="minmax")
         self.action_normalizer.fit(actions)
         
         logger.info(f"Action normalizer fitted: min={self.action_normalizer.normalizer.min_val}, "
                    f"max={self.action_normalizer.normalizer.max_val}")
+        
+        # Obs 归一化 (分别对 position 和 velocity)
+        positions = obs_arr[..., :2]  # (N, history, 2)
+        velocities = obs_arr[..., 2:]  # (N, history, 2)
+        
+        self.obs_normalizer = ObsNormalizer(mode="minmax")
+        self.obs_normalizer.fit(positions, velocities)
+        
+        logger.info(f"Obs normalizer fitted:")
+        logger.info(f"  Position: min={self.obs_normalizer.pos_normalizer.min_val}, "
+                   f"max={self.obs_normalizer.pos_normalizer.max_val}")
+        logger.info(f"  Velocity: min={self.obs_normalizer.vel_normalizer.min_val}, "
+                   f"max={self.obs_normalizer.vel_normalizer.max_val}")
     
     def setup_model(self):
         """初始化模型和优化器"""
@@ -268,7 +287,8 @@ class DiffusionPolicyTrainer:
         
         B = obs.shape[0]
         
-        # 归一化 action
+        # 归一化 obs 和 action
+        obs = self.obs_normalizer.transform(obs)
         action = self.action_normalizer.transform(action)
         
         # 将 obs 展平作为条件
@@ -314,7 +334,8 @@ class DiffusionPolicyTrainer:
             
             B = obs.shape[0]
             
-            # 归一化
+            # 归一化 obs 和 action
+            obs = self.obs_normalizer.transform(obs)
             action = self.action_normalizer.transform(action)
             global_cond = obs.reshape(B, -1)
             
@@ -343,6 +364,7 @@ class DiffusionPolicyTrainer:
             "optimizer_state_dict": self.optimizer.state_dict(),
             "loss": loss,
             "action_normalizer": self.action_normalizer.state_dict(),
+            "obs_normalizer": self.obs_normalizer.state_dict(),  # 新增
             "config": {
                 "history": self.history,
                 "future": self.future,

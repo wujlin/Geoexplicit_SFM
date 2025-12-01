@@ -44,7 +44,7 @@ def main():
         sys.modules['numpy._core.numeric'] = np.core.numeric
         print("Applied numpy compatibility patch")
     
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     print("\n=== 检查点信息 ===")
     print(f"Config: {checkpoint['config']}")

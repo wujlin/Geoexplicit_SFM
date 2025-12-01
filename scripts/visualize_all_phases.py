@@ -309,18 +309,18 @@ def visualize_phase3(output_path: Path = None, num_trajectories: int = 50):
     """
     # 加载数据
     mask_path = PROJECT_ROOT / "data" / "processed" / "walkable_mask.npy"
-    traj_path = PROJECT_ROOT / "data" / "output" / "trajectories.h5"
+    traj_h5_path = PROJECT_ROOT / "data" / "output" / "trajectories.h5"
     
     walkable_mask = np.load(mask_path)
     H, W = walkable_mask.shape
     
-    if not traj_path.exists():
+    if not traj_h5_path.exists():
         print("Warning: trajectories.h5 not found")
         return None
     
     # 读取轨迹
-    with h5py.File(traj_path, 'r') as f:
-        positions = f['positions'][:]  # (T, N, 2)
+    with h5py.File(traj_h5_path, 'r') as f:
+        positions = f['positions'][:]
         velocities = f['velocities'][:] if 'velocities' in f else None
     
     T, N, _ = positions.shape
@@ -574,8 +574,9 @@ def visualize_methodology(output_path: Path = None):
     # --- Phase 3: 轨迹仿真 ---
     ax3 = fig.add_subplot(gs[1, 0])
     
-    if traj_path.exists() and walkable_mask is not None:
-        with h5py.File(traj_path, 'r') as f:
+    traj_h5 = PROJECT_ROOT / "data" / "output" / "trajectories.h5"
+    if traj_h5.exists() and walkable_mask is not None:
+        with h5py.File(traj_h5, 'r') as f:
             positions = f['positions'][:]
         
         # 道路背景

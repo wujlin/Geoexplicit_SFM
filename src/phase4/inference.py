@@ -40,6 +40,7 @@ scheduler_module = _import_module("scheduler", PHASE4_ROOT / "diffusion" / "sche
 unet_module = _import_module("unet1d", PHASE4_ROOT / "model" / "unet1d.py")
 
 ActionNormalizer = normalizer_module.ActionNormalizer
+ObsNormalizer = normalizer_module.ObsNormalizer
 DDPMScheduler = scheduler_module.DDPMScheduler
 DDIMScheduler = scheduler_module.DDIMScheduler
 UNet1D = unet_module.UNet1D
@@ -102,7 +103,7 @@ class DiffusionPolicyInference:
             sys.modules['numpy._core._multiarray_umath'] = getattr(np.core, '_multiarray_umath', np.core.multiarray)
             logger.info("Applied numpy compatibility patch")
         
-        checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
         
         self.config = checkpoint["config"]
         
@@ -129,6 +130,15 @@ class DiffusionPolicyInference:
         self.action_normalizer = ActionNormalizer()
         self.action_normalizer.load_state_dict(checkpoint["action_normalizer"])
         
+        # 加载 obs 归一化器（如果存在）
+        self.obs_normalizer = None
+        if "obs_normalizer" in checkpoint:
+            self.obs_normalizer = ObsNormalizer()
+            self.obs_normalizer.load_state_dict(checkpoint["obs_normalizer"])
+            logger.info("Loaded obs normalizer")
+        else:
+            logger.warning("No obs_normalizer in checkpoint - using raw obs values")
+        
         logger.info(f"Model loaded from {self.checkpoint_path}")
         logger.info(f"Config: history={self.config['history']}, future={self.config['future']}")
     
@@ -149,8 +159,13 @@ class DiffusionPolicyInference:
             actions: (num_samples, future, 2) 预测的速度序列
         """
         # 准备条件
-        obs = torch.from_numpy(obs_history.astype(np.float32))
-        obs = obs.reshape(1, -1).to(self.device)  # (1, history * 4)
+        obs = torch.from_numpy(obs_history.astype(np.float32)).to(self.device)
+        
+        # 对 obs 归一化（如果有归一化器）
+        if self.obs_normalizer is not None:
+            obs = self.obs_normalizer.transform(obs)
+        
+        obs = obs.reshape(1, -1)  # (1, history * 4)
         obs = obs.expand(num_samples, -1)  # (num_samples, history * 4)
         
         # 采样
