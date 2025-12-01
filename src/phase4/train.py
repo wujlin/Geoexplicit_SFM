@@ -101,11 +101,11 @@ class DiffusionPolicyTrainer:
         num_diffusion_steps: int = 100,
         beta_schedule: str = "linear",
         # 训练配置
-        batch_size: int = 2048,  # 增大 batch size 加速训练
-        learning_rate: float = 3e-4,  # 配合大 batch 提高 lr
-        num_epochs: int = 50,  # 减少 epochs，Diffusion 收敛快
+        batch_size: int = 16384,  # 大显存可以用更大 batch
+        learning_rate: float = 1e-3,  # 配合超大 batch 提高 lr
+        num_epochs: int = 30,  # 大 batch 收敛更快
         ema_decay: float = 0.9999,
-        max_samples_per_epoch: int = 1_000_000,  # 每 epoch 最多采样数
+        max_samples_per_epoch: int = 2_000_000,  # 每 epoch 采样 200万
         # 其他
         device: str = "auto",
         checkpoint_dir: str | Path = None,
@@ -459,13 +459,13 @@ class DiffusionPolicyTrainer:
 def main():
     parser = argparse.ArgumentParser(description="Train Diffusion Policy")
     parser.add_argument("--h5_path", type=str, default=None, help="Path to trajectories.h5")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=2048, help="Batch size (larger = faster)")
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=30, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=16384, help="Batch size (larger = faster)")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--history", type=int, default=2, help="History steps")
     parser.add_argument("--future", type=int, default=8, help="Future steps to predict")
     parser.add_argument("--diffusion_steps", type=int, default=100, help="Diffusion steps")
-    parser.add_argument("--max_samples", type=int, default=1_000_000, help="Max samples per epoch")
+    parser.add_argument("--max_samples", type=int, default=2_000_000, help="Max samples per epoch")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cuda/cpu)")
     
     args = parser.parse_args()
