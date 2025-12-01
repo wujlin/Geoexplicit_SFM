@@ -25,10 +25,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.phase4 import config
-from src.phase4.data.normalizer import ActionNormalizer
-from src.phase4.diffusion.scheduler import DDPMScheduler, DDIMScheduler
-from src.phase4.model.unet1d import UNet1D
+# 确保 src 目录也在路径中
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+# 现在可以用简化的导入
+from phase4 import config
+from phase4.data.normalizer import ActionNormalizer
+from phase4.diffusion.scheduler import DDPMScheduler, DDIMScheduler
+from phase4.model.unet1d import UNet1D
 
 # 设置日志
 logging.basicConfig(
