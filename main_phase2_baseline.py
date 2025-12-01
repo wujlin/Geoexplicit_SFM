@@ -25,8 +25,8 @@ def main():
         "clamp_min": 0.0,
         "clamp_max": None,
         "normalize": True,
-        "use_potential_field": True,   # 使用势能场（保留流量权重）
-        "use_distance_field": False,   # 不使用距离场
+        "use_potential_field": True,   # 用于可视化
+        "use_distance_field": True,    # 用于导航（指向最近 sink）
     }
     out = solve_field(mask, density, **params)
     field = out["smooth_field"]

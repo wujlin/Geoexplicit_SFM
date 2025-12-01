@@ -86,6 +86,39 @@ def visualize_phase1(output_path: Path = None):
     
     H, W = walkable_mask.shape
     
+    # 检测列名，兼容不同格式
+    # 权重列
+    if 'weight' in sinks_df.columns:
+        weight_col = 'weight'
+    elif 'total_flow' in sinks_df.columns:
+        weight_col = 'total_flow'
+    else:
+        weight_col = None
+    
+    # 坐标列：如果没有 grid_x/grid_y，需要从 lat/lon 转换
+    if 'grid_x' not in sinks_df.columns and 'lat' in sinks_df.columns:
+        # 需要将地理坐标转换为栅格坐标
+        # 从 walkable_mask 的形状和 sinks 的 bbox 推断变换
+        lat_min, lat_max = sinks_df['lat'].min(), sinks_df['lat'].max()
+        lon_min, lon_max = sinks_df['lon'].min(), sinks_df['lon'].max()
+        
+        # 增加一些 padding（与 geo_rasterizer 保持一致）
+        padding_km = 5.0
+        lat_per_km = 1.0 / 111.0
+        lon_per_km = 1.0 / (111.320 * np.cos(np.radians(sinks_df['lat'].mean())) + 1e-9)
+        pad_lat = padding_km * lat_per_km
+        pad_lon = padding_km * lon_per_km
+        
+        lat_min_ext = lat_min - pad_lat
+        lat_max_ext = lat_max + pad_lat
+        lon_min_ext = lon_min - pad_lon
+        lon_max_ext = lon_max + pad_lon
+        
+        # 计算栅格坐标（假设 100m 分辨率）
+        # X 对应 lon，Y 对应 lat
+        sinks_df['grid_x'] = ((sinks_df['lon'] - lon_min_ext) / (lon_max_ext - lon_min_ext) * W).astype(int)
+        sinks_df['grid_y'] = ((sinks_df['lat'] - lat_min_ext) / (lat_max_ext - lat_min_ext) * H).astype(int)
+    
     # 创建图形
     fig = plt.figure(figsize=(14, 5))
     gs = gridspec.GridSpec(1, 3, width_ratios=[1, 1, 0.8], wspace=0.25)
@@ -101,7 +134,7 @@ def visualize_phase1(output_path: Path = None):
     if 'grid_x' in sinks_df.columns and 'grid_y' in sinks_df.columns:
         sink_x = sinks_df['grid_x'].values
         sink_y = sinks_df['grid_y'].values
-        weights = sinks_df['weight'].values if 'weight' in sinks_df.columns else np.ones(len(sink_x))
+        weights = sinks_df[weight_col].values if weight_col else np.ones(len(sink_x))
         
         # 归一化权重用于着色
         weights_norm = (weights - weights.min()) / (weights.max() - weights.min() + 1e-9)
@@ -143,17 +176,20 @@ def visualize_phase1(output_path: Path = None):
     # --- Panel C: 流量分布 ---
     ax3 = fig.add_subplot(gs[2])
     
-    if 'weight' in sinks_df.columns:
-        weights = sinks_df['weight'].values
+    if weight_col and weight_col in sinks_df.columns:
+        weights = sinks_df[weight_col].values
         weights_log = np.log10(weights + 1)
         
-        ax3.hist(weights_log, bins=30, color=COLORS['accent'], edgecolor='white', alpha=0.8)
+        ax3.hist(weights_log, bins=20, color=COLORS['accent'], edgecolor='white', alpha=0.8)
         ax3.axvline(np.median(weights_log), color=COLORS['secondary'], linestyle='--', 
                    linewidth=1.5, label=f'Median: {10**np.median(weights_log):.0f}')
         
         ax3.set_xlabel('log₁₀(Flow Weight + 1)')
         ax3.set_ylabel('Count')
         ax3.legend(frameon=False)
+    else:
+        ax3.text(0.5, 0.5, 'No weight data available', ha='center', va='center',
+                transform=ax3.transAxes, fontsize=10, color='gray')
     
     ax3.set_title('(c) Flow Weight Distribution', fontweight='bold')
     
@@ -230,6 +266,20 @@ def visualize_phase2(output_path: Path = None):
     road_display = np.where(walkable_mask, 0.95, 0.3)
     ax2.imshow(road_display.T, cmap='gray', origin='lower', vmin=0, vmax=1)
     
+    # 加载距离场，标注 sink 位置
+    dist_field_path = PROJECT_ROOT / "data" / "processed" / "distance_field.npy"
+    if dist_field_path.exists():
+        dist_field = np.load(dist_field_path)
+        # 找到每个 sink 区域的质心
+        from scipy import ndimage
+        sink_mask = dist_field == 0
+        labeled, num_sinks = ndimage.label(sink_mask)
+        sink_centers = ndimage.center_of_mass(sink_mask, labeled, range(1, num_sinks + 1))
+        
+        # 标注 sink 位置（红色 X）
+        for cy, cx in sink_centers:
+            ax2.scatter(cx, cy, c='red', s=50, marker='x', linewidths=2, zorder=10)
+    
     # 流线图（降采样）- 使用 quiver 替代 streamplot
     step = 25
     Y, X = np.mgrid[0:H:step, 0:W:step]
@@ -247,45 +297,48 @@ def visualize_phase2(output_path: Path = None):
                speed[mask_sub], cmap='viridis', scale=30, width=0.003,
                headwidth=4, headlength=5, alpha=0.8)
     
-    ax2.set_title('(b) Navigation Field\n(Streamlines)', fontweight='bold')
+    ax2.set_title(f'(b) Navigation Field\n({num_sinks} Sinks marked in red)', fontweight='bold')
     ax2.set_xlabel('Grid X (100m/pixel)')
     ax2.set_ylabel('Grid Y (100m/pixel)')
     ax2.set_aspect('equal')
     ax2.set_xlim(0, W)
     ax2.set_ylim(0, H)
     
-    # --- Panel C: 梯度强度分析 ---
+    # --- Panel C: 距离场分布 ---
     ax3 = fig.add_subplot(gs[2])
     
-    # 计算梯度强度
-    grad_y, grad_x = np.gradient(potential_field)
-    grad_mag = np.sqrt(grad_y**2 + grad_x**2)
-    
-    # 只看道路上的梯度
-    road_mask = walkable_mask > 0
-    grad_road = grad_mag[road_mask]
-    
-    # 梯度分布
-    ax3.hist(grad_road, bins=50, color=COLORS['accent'], edgecolor='white', alpha=0.8, density=True)
-    ax3.axvline(np.mean(grad_road), color=COLORS['secondary'], linestyle='--', 
-               linewidth=1.5, label=f'Mean: {np.mean(grad_road):.4f}')
-    ax3.axvline(np.median(grad_road), color=COLORS['success'], linestyle=':', 
-               linewidth=1.5, label=f'Median: {np.median(grad_road):.4f}')
-    
-    ax3.set_xlabel('Gradient Magnitude')
-    ax3.set_ylabel('Density')
-    ax3.set_title('(c) Gradient Distribution\n(On-Road)', fontweight='bold')
-    ax3.legend(frameon=False, fontsize=8)
-    
-    # 添加技术说明
-    tech_text = (
-        "Method: Weighted Gravity\n"
-        f"$\\phi(x) = \\sum_i \\frac{{w_i}}{{1 + \\alpha \\cdot d_i(x)}}$\n"
-        f"Decay: α = 0.05"
-    )
-    ax3.text(0.95, 0.5, tech_text, transform=ax3.transAxes, fontsize=8,
-             verticalalignment='center', horizontalalignment='right',
-             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+    # 加载距离场（到 sink 的距离）
+    dist_field_path = PROJECT_ROOT / "data" / "processed" / "distance_field.npy"
+    if dist_field_path.exists():
+        dist_field = np.load(dist_field_path)
+        road_mask = walkable_mask > 0
+        dist_road = dist_field[road_mask]
+        # 过滤异常值
+        dist_valid = dist_road[(dist_road > 0) & (dist_road < 5000)]
+        
+        ax3.hist(dist_valid, bins=50, color=COLORS['accent'], edgecolor='white', alpha=0.8, density=True)
+        ax3.axvline(np.mean(dist_valid), color=COLORS['secondary'], linestyle='--', 
+                   linewidth=1.5, label=f'Mean: {np.mean(dist_valid):.0f} px')
+        ax3.axvline(np.median(dist_valid), color=COLORS['success'], linestyle=':', 
+                   linewidth=1.5, label=f'Median: {np.median(dist_valid):.0f} px')
+        
+        ax3.set_xlabel('Distance to Nearest Sink (pixels)')
+        ax3.set_ylabel('Density')
+        ax3.set_title('(c) Distance Field Distribution\n(On-Road)', fontweight='bold')
+        ax3.legend(frameon=False, fontsize=8)
+        
+        # 添加技术说明
+        tech_text = (
+            f"Max Distance: {dist_valid.max():.0f} px\n"
+            f"({dist_valid.max() * 0.1:.0f} km at 100m/px)"
+        )
+        ax3.text(0.95, 0.7, tech_text, transform=ax3.transAxes, fontsize=8,
+                 verticalalignment='center', horizontalalignment='right',
+                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+    else:
+        ax3.text(0.5, 0.5, 'Distance field not found', ha='center', va='center',
+                transform=ax3.transAxes, fontsize=10, color='gray')
+        ax3.set_title('(c) Distance Field Distribution', fontweight='bold')
     
     plt.suptitle('Phase 2: Navigation Field Computation', fontsize=14, fontweight='bold', y=1.02)
     
@@ -475,11 +528,7 @@ def visualize_phase3(output_path: Path = None, num_trajectories: int = 50):
         f"━━━ Quality Metrics ━━━\n\n"
         f"On-Road Ratio: {on_road_ratio*100:.1f}%\n"
         f"Path Efficiency: {np.mean(efficiencies)*100:.1f}%\n"
-        f"Mean Speed: {mean_speed:.2f} px/step\n\n"
-        f"━━━ Physics Parameters ━━━\n\n"
-        f"V₀ = 1.5, σ = 0.05\n"
-        f"Momentum = 0.85\n"
-        f"dt = 1.0"
+        f"Mean Speed: {mean_speed:.2f} px/step"
     )
     
     ax4.text(0.1, 0.95, stats_text, transform=ax4.transAxes, fontsize=9,
@@ -605,9 +654,9 @@ def visualize_methodology(output_path: Path = None):
     ax3.set_xlim(0, W)
     ax3.set_ylim(0, H)
     
-    # 添加公式
+    # 添加简化公式（不显示具体参数值）
     ax3.text(0.02, 0.98, 
-             r'$v_{t+1} = \beta v_t + (1-\beta)(\nabla\phi + \eta)$' + '\n' + r'$\beta = 0.85$', 
+             r'$v_{t+1} = \beta v_t + (1-\beta)(\nabla\phi + \eta)$', 
              transform=ax3.transAxes, fontsize=10, verticalalignment='top',
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
     

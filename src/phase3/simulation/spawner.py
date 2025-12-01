@@ -61,13 +61,37 @@ class Spawner:
         xs = xs + np.random.uniform(0.1, 0.9, size=n)
         return np.stack([ys, xs], axis=1)
 
-    def respawn(self, pos, vel, active, indices):
-        """重置给定索引的粒子"""
+    def respawn(self, pos, vel, active, indices, nav_field=None, v0=1.0):
+        """重置给定索引的粒子
+        
+        Args:
+            nav_field: (2, H, W) 导航场，用于初始化速度方向
+            v0: 初始速度大小
+        """
         if len(indices) == 0:
             return
         new_pos = self.sample_positions(len(indices))
+        H, W = self.mask.shape
+        
         for i, idx in enumerate(indices):
             pos[idx, 0] = new_pos[i, 0]
             pos[idx, 1] = new_pos[i, 1]
-            vel[idx, :] = 0.0
+            
+            # 使用导航场方向初始化速度，而不是从0开始
+            if nav_field is not None:
+                yi = int(np.clip(new_pos[i, 0], 0, H - 1))
+                xi = int(np.clip(new_pos[i, 1], 0, W - 1))
+                nav_dir = nav_field[:, yi, xi]
+                nav_mag = np.sqrt(nav_dir[0]**2 + nav_dir[1]**2) + 1e-6
+                # 初始速度 = 导航方向 * v0 * (0.5~1.0 随机因子)
+                speed_factor = np.random.uniform(0.5, 1.0)
+                vel[idx, 0] = (nav_dir[0] / nav_mag) * v0 * speed_factor
+                vel[idx, 1] = (nav_dir[1] / nav_mag) * v0 * speed_factor
+            else:
+                # 无导航场时，给随机方向的初始速度
+                angle = np.random.uniform(0, 2 * np.pi)
+                speed = np.random.uniform(0.3, 1.0) * v0
+                vel[idx, 0] = np.cos(angle) * speed
+                vel[idx, 1] = np.sin(angle) * speed
+            
             active[idx] = True

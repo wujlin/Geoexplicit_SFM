@@ -308,17 +308,17 @@ def solve_field(
     clamp_min: float | None = 0.0,
     clamp_max: float | None = None,
     normalize: bool = True,
-    use_distance_field: bool = False,
+    use_distance_field: bool = True,
     use_potential_field: bool = True,
 ):
     """
     便捷封装：扩散 -> 梯度 -> score。
     
     导航场计算方式：
-    - use_potential_field=True (默认): 使用势能场，保留流量权重
-    - use_distance_field=True: 使用距离场，只考虑最近 sink
+    - use_distance_field=True (默认优先): 使用距离场导航（指向最近 sink）
+    - use_potential_field=True: 计算势能场（用于可视化，保留流量权重）
     
-    返回 dict，包括 smooth_field、grad、score、nav 等。
+    返回 dict，包括 smooth_field、grad、score、nav、distance_field、potential_field 等。
     """
     smooth = diffuse_density(
         target_density,
@@ -334,17 +334,22 @@ def solve_field(
     
     result = {"smooth_field": smooth, "grad": grad, "score": score}
     
-    if use_potential_field:
-        # 使用势能场计算导航方向（保留流量权重）
-        potential = compute_potential_field(target_density, walkable_mask)
-        nav_y, nav_x = compute_potential_navigation(potential, walkable_mask)
-        result["potential_field"] = potential
-        result["nav"] = (nav_y, nav_x)
-    elif use_distance_field:
-        # 使用距离场计算导航方向（只考虑最近 sink）
+    # 计算距离场（优先用于导航）
+    if use_distance_field:
         dist_field = compute_distance_field(target_density, walkable_mask, threshold=0.001)
         nav_y, nav_x = compute_navigation_field(dist_field, walkable_mask)
         result["distance_field"] = dist_field
         result["nav"] = (nav_y, nav_x)
+        print(f"  导航场基于距离场生成")
+    
+    # 计算势能场（用于可视化）
+    if use_potential_field:
+        potential = compute_potential_field(target_density, walkable_mask)
+        result["potential_field"] = potential
+        # 如果没有距离场导航，用势能场导航作为备选
+        if "nav" not in result:
+            nav_y, nav_x = compute_potential_navigation(potential, walkable_mask)
+            result["nav"] = (nav_y, nav_x)
+            print(f"  导航场基于势能场生成（备选）")
     
     return result

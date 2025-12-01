@@ -40,17 +40,23 @@ def main(n_agents=None, n_steps=None):
 
     # 初始化粒子
     spawner = Spawner(mask=mask, weight_map=spawn_weight)
-    pos = spawner.sample_positions(n_agents).astype(np.float32)
+    pos = np.zeros((n_agents, 2), dtype=np.float32)
     vel = np.zeros((n_agents, 2), dtype=np.float32)
-    active = np.ones((n_agents,), dtype=np.bool_)
+    active = np.zeros((n_agents,), dtype=np.bool_)
     
-    # 打印初始距离统计
+    # 使用 respawn 初始化，给予初始速度
+    spawner.respawn(pos, vel, active, np.arange(n_agents), nav_field=field, v0=config.V0)
+    
+    # 打印初始距离和速度统计
     if dist_field_path.exists():
         H, W = mask.shape
         init_dists = [dist_field[int(np.clip(pos[i,0], 0, H-1)), 
                                   int(np.clip(pos[i,1], 0, W-1))] 
                       for i in range(min(100, n_agents))]
         print(f"[Init] 初始距离: mean={np.mean(init_dists):.0f}, min={np.min(init_dists):.0f}, max={np.max(init_dists):.0f}")
+    
+    init_speeds = np.sqrt((vel**2).sum(axis=1))
+    print(f"[Init] 初始速度: mean={init_speeds.mean():.3f}, min={init_speeds.min():.3f}, max={init_speeds.max():.3f}")
 
     recorder = TrajRecorder(agent_count=n_agents, buffer_steps=config.BUFFER_STEPS, out_path=config.TRAJ_PATH)
 
@@ -60,6 +66,9 @@ def main(n_agents=None, n_steps=None):
           f"OFF_ROAD_RECOVERY={config.OFF_ROAD_RECOVERY}")
     
     t0 = time.time()
+    respawn_count = 0
+    H, W = mask.shape
+    
     for t in range(n_steps):
         step_kernel(
             pos,
@@ -76,6 +85,20 @@ def main(n_agents=None, n_steps=None):
             config.OFF_ROAD_RECOVERY,
             config.MOMENTUM,
         )
+        
+        # 检查到达 sink 的 agent（距离 < 5 且速度 < 0.1）并重生
+        if dist_field_path.exists():
+            speed = np.sqrt((vel**2).sum(axis=1))
+            arrived = []
+            for i in range(n_agents):
+                y = int(np.clip(pos[i, 0], 0, H-1))
+                x = int(np.clip(pos[i, 1], 0, W-1))
+                if dist_field[y, x] < 5 and speed[i] < 0.1:
+                    arrived.append(i)
+            
+            if arrived:
+                spawner.respawn(pos, vel, active, np.array(arrived), nav_field=field, v0=config.V0)
+                respawn_count += len(arrived)
 
         recorder.collect(pos, vel)
         
@@ -86,7 +109,6 @@ def main(n_agents=None, n_steps=None):
             eta_str = f"{eta/60:.1f} min" if eta > 0 else "N/A"
             # 统计当前速度
             speed = np.sqrt((vel**2).sum(axis=1))
-            H, W = mask.shape
             on_road_count = 0
             for i in range(min(1000, n_agents)):
                 y = int(np.clip(pos[i, 0], 0, H-1))
@@ -95,7 +117,7 @@ def main(n_agents=None, n_steps=None):
                     on_road_count += 1
             on_road_ratio = on_road_count / min(1000, n_agents)
             print(f"step {t+1}/{n_steps} | elapsed {elapsed:.1f}s | {steps_per_sec:.2f} steps/s | ETA {eta_str} | "
-                  f"speed mean={speed.mean():.3f} max={speed.max():.3f} | on_road={on_road_ratio*100:.1f}%")
+                  f"speed mean={speed.mean():.3f} max={speed.max():.3f} | on_road={on_road_ratio*100:.1f}% | respawns={respawn_count}")
 
     recorder.close()
     total_time = time.time() - t0

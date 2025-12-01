@@ -20,17 +20,17 @@ TRAJ_PATH = OUTPUT_DIR / "trajectories.h5"
 # 物理/模拟参数
 DT = 1.0                 # 时间步长
 MAX_STEPS = 10000        # 总仿真步数
-NOISE_SIGMA = 0.05       # 低噪声
+NOISE_SIGMA = 0.08       # 稍微增加噪声，使轨迹更自然
 TAU = 0.5                # 未使用
 V0 = 1.5                 # 速度：使用硬约束后可以提高
 AGENT_COUNT = 10000      # 粒子数量
 
 # 重生/边界参数
 RESPAWN_RADIUS = -1.0    # 禁用基于SDF的respawn，仅靠到达终点
-WALL_DIST_THRESH = 5.0   # 距边界多近开始斥力（像素）- 增大
-WALL_PUSH_STRENGTH = 2.0 # 墙壁斥力强度
-OFF_ROAD_RECOVERY = 5.0  # 掉网恢复推力（增强）
-MOMENTUM = 0.85          # 动量系数（0=无惯性，1=完全惯性）
+WALL_DIST_THRESH = 3.0   # 距边界多近开始斥力（像素）- 减小避免过度干扰
+WALL_PUSH_STRENGTH = 1.5 # 墙壁斥力强度 - 减小
+OFF_ROAD_RECOVERY = 3.0  # 掉网恢复推力 - 减小避免振荡
+MOMENTUM = 0.7           # 动量系数 - 降低使加速更快
 
 # 像素/秒缩放：若 V0 为米/秒，则 V0_PIX = V0 / GRID_RES_M
 GRID_RES_M = 100.0       # 对应 Phase2 栅格分辨率
