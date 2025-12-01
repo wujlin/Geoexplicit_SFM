@@ -67,21 +67,24 @@ Let's dive into the details.
 (动作：切换 PPT，指向右侧的 GIS 地图)
 
 Speaker:
-First, we need to ground our simulation in reality. We don't just randomly place destinations.
+First, we ground our simulation in real commuting patterns.
 
-We ingest raw GeoPackage data—including schools, offices, and daycares—and transform them from WGS84 coordinates into a raster grid.
-Crucially, strictly mapping points to a grid isn't enough. We perform network snapping, ensuring every Point of Interest (POI) is snapped to the nearest road network node. In our case study of Wayne County, we identified 166 valid "Sinks" (destinations) that ensure agents always have a reachable goal.
+We use **Census LODES Origin-Destination flow data**, which captures where people actually travel for work. We apply **Pareto filtering** to focus on high-flow destinations—the top 80% of commuting volume.
 
-[Slide 6: Phase 2 - Potential Fields]
+Then, we use **DBSCAN spatial clustering** with Haversine distance to merge nearby high-flow zones into coherent destination clusters.
 
-(动作：切换 PPT，展示右侧的 3D 势场图)
+In Wayne County—the Detroit metro area—this yields **35 major Sinks**, each representing thousands of daily commuters.
+
+[Slide 6: Phase 2 - Navigation Field]
+
+(动作：切换 PPT，展示右侧的势场图)
 
 Speaker:
-Once we have the destinations, how do we guide the agents?
-Traditional methods often use "Eikonal equations" which simply find the shortest path to the nearest exit. This is unrealistic for city dwellers who have specific preferences.
+With destinations identified, how do we guide agents toward them?
 
-Instead, we propose a Gravity Potential Field.
-As you can see in the visualization, this creates a smooth, continuous landscape where agents feel the "pull" of multiple destinations simultaneously, weighted by the attractiveness of each sink. This eliminates the sharp, robotic turns often seen in Voronoi-based approaches.
+We compute a **distance-based navigation field**. For each walkable pixel, we calculate the direction pointing toward the nearest sink along the road network.
+
+This creates a smooth vector field—as shown in the visualization—where every location has a clear "pull" direction. Unlike Eikonal shortest-path methods, our field naturally handles multiple competing destinations weighted by their attractiveness.
 
 [Slide 7: Mathematical Formulation]
 
@@ -109,33 +112,31 @@ Potential Guidance: The gradient we just calculated, pulling the agent towards g
 
 Stochastic Noise: A Gaussian noise term $\sigma$, simulating human variability and exploration.
 
-We calibrated these parameters—setting momentum to 0.85 and noise to 0.05—to mimic realistic walking behaviors.
+We calibrated these parameters—setting momentum to 0.7 and noise scale to 0.08—to balance smooth motion with realistic human variability.
 
-[Slide 9: Strict Constraints]
+[Slide 9: Geographic Constraints]
 
 (动作：切换 PPT，强调右下角的 Road Mask 图示)
 
 Speaker:
-However, physics alone isn't enough; we need geographic consistency. We strictly enforce that agents cannot walk through walls.
+Physics alone isn't enough—we need strict geographic consistency.
 
-We implemented a hierarchical check system:
+We enforce a **walkable mask** derived from real road shapefiles. Agents are confined to valid road pixels only.
 
-Walkable Mask: Agents are strictly confined to road pixels derived from shapefiles.
+When an agent attempts an invalid move, we apply **boundary recovery**: it's gently pushed back onto the nearest road.
 
-Collision Handling: If a move is invalid, the agent backtracks or slides along the boundary.
-
-JIT Acceleration: We utilized Numba to accelerate this process, allowing us to simulate 10,000 agents over 5,000 steps in just minutes.
+With vectorized NumPy operations, we simulate **10,000 agents over 10,000 steps** in under a minute on a standard workstation.
 
 [Slide 10: Results]
 
 (动作：切换 PPT，指向数据)
 
 Speaker:
-The results of the simulation phase are highly promising.
-As shown here, we achieved 100% Road Adherence—meaning no physical violations occurred.
-Simultaneously, 96.8% of agents successfully converged to their intended sinks.
+The simulation results are highly promising.
 
-This generated dataset of 10,000 high-fidelity trajectories serves as the "Ground Truth" for our next phase.
+We achieved **100% road adherence**—agents never walk through buildings or off-road areas. The average speed remains stable at 0.75 pixels per step, with smooth directional changes.
+
+We generated **10,000 agent trajectories over 10,000 time steps**—that's 100 million data points—serving as high-fidelity training data for the next phase.
 
 [Slide 11: Phase 4 - Policy Learning]
 
@@ -144,19 +145,22 @@ This generated dataset of 10,000 high-fidelity trajectories serves as the "Groun
 Speaker:
 You might ask: If the simulation works well, why do we need Phase 4?
 
-The problem is that the Physics Simulation is heavy. It requires storing Gigabytes of potential fields and performing slow gradient queries at every step. It's hard to deploy on edge devices.
+The problem is that the Physics Simulation is computationally heavy. It requires loading large navigation fields and performing gradient lookups at every step—not ideal for real-time or edge deployment.
 
-Therefore, we use Diffusion Policy Distillation. We treat the simulator as a "Teacher" and train a lightweight Neural Network "Student." This creates a model that is end-to-end, less than 10MB in size, and generalizes well to similar road structures.
+Therefore, we use **Diffusion Policy Distillation**. The simulator acts as a "Teacher," generating expert demonstrations. We train a lightweight neural network "Student" that learns to imitate this behavior.
+
+The result? A model **under 5MB** that runs in milliseconds per step, without needing any field arrays at inference time.
 
 [Slide 12: Model Architecture]
 
 (动作：切换 PPT，简述网络结构)
 
 Speaker:
-We adopted a 1D-UNet coupled with a Denoising Diffusion Probabilistic Model (DDPM).
+We adopted a **1D-UNet** architecture with a **DDPM denoising scheduler**.
 
-We frame trajectory generation as a denoising process. The model takes a 2-frame history (position and velocity) as input and iteratively "denoises" a random sequence into a coherent 8-step future action plan.
-This allows the model to capture the multi-modal distribution of human behavior better than simple regression models.
+The model takes a 2-frame history—position and velocity—as conditioning input. Through iterative denoising, it transforms random noise into a coherent **8-step future action sequence**.
+
+Crucially, diffusion models excel at capturing **multi-modal distributions**. Unlike regression models that output a single "average" path, our model can sample diverse yet realistic trajectories—essential for simulating the variability in human movement.
 
 [Slide 13: Conclusion]
 

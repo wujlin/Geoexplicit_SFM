@@ -1,6 +1,6 @@
 """
 HDF5 轨迹数据集：滑动窗口读取 (observation, action)
-- observation: 过去 history 步的位置与速度 (shape: history, 4)
+- observation: 过去 history 步的位置、速度、导航方向 (shape: history, 6)
 - action: 未来 future 步的速度序列 (shape: future, 2)
 - 支持加载预计算的有效样本索引（过滤低速样本）
 
@@ -29,11 +29,13 @@ class TrajectorySlidingWindow(Dataset):
         stride: int = 1,
         agent_ids: Optional[np.ndarray] = None,
         valid_indices_path: Optional[str | Path] = None,  # 预计算的有效索引文件
+        nav_field: Optional[np.ndarray] = None,  # (2, H, W) 导航场方向
     ):
         self.h5_path = Path(h5_path)
         self.history = history
         self.future = future
         self.stride = stride
+        self.nav_field = nav_field  # 导航场条件
 
         with h5py.File(self.h5_path, "r") as f:
             self.pos_shape = f["positions"].shape  # (T, N, 2)
@@ -81,6 +83,17 @@ class TrajectorySlidingWindow(Dataset):
     def _ensure_open(self):
         if self._fh is None:
             self._fh = h5py.File(self.h5_path, "r")
+    
+    def _get_nav_direction(self, pos: np.ndarray) -> np.ndarray:
+        """获取位置处的导航方向 (2,)"""
+        if self.nav_field is None:
+            return np.zeros(2, dtype=np.float32)
+        
+        H, W = self.nav_field.shape[1], self.nav_field.shape[2]
+        y = int(np.clip(pos[0], 0, H - 1))
+        x = int(np.clip(pos[1], 0, W - 1))
+        nav_dir = self.nav_field[:, y, x]
+        return nav_dir.astype(np.float32)
 
     def __getitem__(self, idx):
         self._ensure_open()
@@ -99,8 +112,14 @@ class TrajectorySlidingWindow(Dataset):
         else:
             pos_hist_ext = pos_ds[t_idx : t_idx + self.history + 1, agent, :]
             vel_hist = np.diff(pos_hist_ext, axis=0)
+        
+        # 获取每个历史帧的导航方向
+        nav_hist = np.zeros((self.history, 2), dtype=np.float32)
+        for i in range(self.history):
+            nav_hist[i] = self._get_nav_direction(pos_hist[i])
 
-        obs = np.concatenate([pos_hist, vel_hist], axis=-1)  # (history,4)
+        # obs: position + velocity + nav_direction
+        obs = np.concatenate([pos_hist, vel_hist, nav_hist], axis=-1)  # (history, 6)
 
         # 未来 action（速度）
         if vel_ds is not None:
@@ -113,8 +132,8 @@ class TrajectorySlidingWindow(Dataset):
         action = torch.from_numpy(np.asarray(action, dtype=np.float32))
 
         return {
-            "obs": obs,  # (history,4)
-            "action": action,  # (future,2)
+            "obs": obs,  # (history, 6) = [pos(2) + vel(2) + nav(2)]
+            "action": action,  # (future, 2)
             "agent": agent,
             "t0": t_idx,
         }

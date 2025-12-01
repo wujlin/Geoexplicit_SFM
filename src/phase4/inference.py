@@ -145,14 +145,14 @@ class DiffusionPolicyInference:
     @torch.no_grad()
     def predict_action(
         self,
-        obs_history: np.ndarray,  # (history, 4): [pos_x, pos_y, vel_x, vel_y]
+        obs_history: np.ndarray,  # (history, 6): [pos_x, pos_y, vel_x, vel_y, nav_x, nav_y]
         num_samples: int = 1,
     ) -> np.ndarray:
         """
         预测未来动作序列
         
         Args:
-            obs_history: (history, 4) 历史观测 [位置 + 速度]
+            obs_history: (history, 6) 历史观测 [位置 + 速度 + 导航方向]
             num_samples: 生成样本数
         
         Returns:
@@ -165,8 +165,8 @@ class DiffusionPolicyInference:
         if self.obs_normalizer is not None:
             obs = self.obs_normalizer.transform(obs)
         
-        obs = obs.reshape(1, -1)  # (1, history * 4)
-        obs = obs.expand(num_samples, -1)  # (num_samples, history * 4)
+        obs = obs.reshape(1, -1)  # (1, history * 6)
+        obs = obs.expand(num_samples, -1)  # (num_samples, history * 6)
         
         # 采样
         shape = (num_samples, self.config["future"], self.config["act_dim"])
@@ -183,6 +183,20 @@ class DiffusionPolicyInference:
         
         return samples.cpu().numpy()
     
+    def _get_nav_direction(self, pos: np.ndarray, nav_field: np.ndarray) -> np.ndarray:
+        """获取位置对应的导航方向"""
+        H, W = nav_field.shape[1], nav_field.shape[2]
+        iy = int(np.clip(pos[0], 0, H-1))
+        ix = int(np.clip(pos[1], 0, W-1))
+        nav_dir = nav_field[:, iy, ix]  # (2,)
+        # 归一化为单位向量
+        norm = np.linalg.norm(nav_dir)
+        if norm > 1e-6:
+            nav_dir = nav_dir / norm
+        else:
+            nav_dir = np.array([0.0, 0.0])
+        return nav_dir
+    
     def simulate(
         self,
         start_pos: np.ndarray,
@@ -191,48 +205,50 @@ class DiffusionPolicyInference:
         max_steps: int = 500,
         num_action_samples: int = 1,
         action_horizon: int = 4,  # MPC 执行多少步（增大以减少推理次数）
-        nav_weight: float = 0.7,  # 导航场方向权重（0=纯模型，1=纯导航场）
+        nav_weight: float = 0.0,  # 混合权重（新模型下默认0，完全依赖模型）
     ) -> np.ndarray:
         """
-        闭环仿真（混合模式：Diffusion预测速度大小 + 导航场提供方向）
+        闭环仿真（使用包含导航方向的 obs）
         
         Args:
             start_pos: (2,) 起始位置
             walkable_mask: (H, W) 可行走区域
-            nav_field: (2, H, W) 导航场方向向量（可选）
+            nav_field: (2, H, W) 导航场方向向量（必须提供）
             max_steps: 最大步数
             num_action_samples: 每次预测采样数
             action_horizon: 每次执行多少步预测动作（增大可加速）
-            nav_weight: 导航场方向权重，越大越依赖导航场方向
+            nav_weight: 方向混合权重（0=纯模型，1=纯导航场）- 新模型下可设为0
         
         Returns:
             trajectory: (T, 2) 轨迹
         """
+        if nav_field is None:
+            raise ValueError("nav_field is required for the new model (obs includes nav_direction)")
+        
         history = self.config["history"]
         H, W = walkable_mask.shape
         
-        # 初始化状态（如果有导航场，用导航场方向初始化速度）
+        # 初始化状态
         pos = start_pos.copy()
-        if nav_field is not None:
-            iy, ix = int(np.clip(pos[0], 0, H-1)), int(np.clip(pos[1], 0, W-1))
-            nav_dir = nav_field[:, iy, ix]
-            vel = nav_dir * 0.8  # 初始速度沿导航方向
-        else:
-            vel = np.zeros(2)
+        # 用导航场方向初始化速度
+        nav_dir = self._get_nav_direction(pos, nav_field)
+        vel = nav_dir * 0.8  # 初始速度沿导航方向
         
         # 历史记录 (用于构建 obs)
         pos_history = [pos.copy() for _ in range(history)]
         vel_history = [vel.copy() for _ in range(history)]
+        nav_history = [self._get_nav_direction(pos, nav_field) for _ in range(history)]
         
         trajectory = [pos.copy()]
         step = 0
         
         while step < max_steps:
-            # 构建 obs
+            # 构建 obs (history, 6): [pos, vel, nav_dir]
             obs = np.concatenate([
                 np.stack(pos_history[-history:], axis=0),  # (history, 2)
                 np.stack(vel_history[-history:], axis=0),  # (history, 2)
-            ], axis=-1)  # (history, 4)
+                np.stack(nav_history[-history:], axis=0),  # (history, 2)
+            ], axis=-1)  # (history, 6)
             
             # 预测动作
             actions = self.predict_action(obs, num_samples=num_action_samples)
@@ -252,8 +268,8 @@ class DiffusionPolicyInference:
                 model_vel = action_seq[i]
                 model_speed = np.linalg.norm(model_vel)
                 
-                # 混合模式：用导航场方向 + 模型速度大小
-                if nav_field is not None and model_speed > 0.01:
+                # 可选混合模式（如果 nav_weight > 0，则混合导航场方向）
+                if nav_weight > 0 and model_speed > 0.01:
                     iy, ix = int(np.clip(pos[0], 0, H-1)), int(np.clip(pos[1], 0, W-1))
                     nav_dir = nav_field[:, iy, ix]
                     nav_norm = np.linalg.norm(nav_dir)
@@ -287,6 +303,7 @@ class DiffusionPolicyInference:
                 # 更新历史
                 pos_history.append(pos.copy())
                 vel_history.append(vel.copy())
+                nav_history.append(self._get_nav_direction(pos, nav_field))
                 trajectory.append(pos.copy())
                 step += 1
         
@@ -334,7 +351,7 @@ def main():
     parser.add_argument("--use_ddim", action="store_true", default=True, help="Use DDIM")
     parser.add_argument("--ddim_steps", type=int, default=10, help="DDIM steps (fewer = faster)")
     parser.add_argument("--action_horizon", type=int, default=4, help="Steps to execute per prediction")
-    parser.add_argument("--nav_weight", type=float, default=0.7, help="Navigation field weight (0=pure model, 1=pure nav)")
+    parser.add_argument("--nav_weight", type=float, default=0.0, help="Navigation field weight (0=pure model, 1=pure nav) - set 0 for new model")
     parser.add_argument("--output", type=str, default=None, help="Output image path")
     
     args = parser.parse_args()

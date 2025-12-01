@@ -124,7 +124,8 @@ class DiffusionPolicyTrainer:
         self.future = future
         
         # 模型配置
-        self.obs_dim = history * 4  # 位置 (2) + 速度 (2) * history
+        # obs = position (2) + velocity (2) + nav_direction (2) = 6 per frame
+        self.obs_dim = history * 6  
         self.act_dim = 2  # 速度维度
         self.base_channels = base_channels
         self.cond_dim = cond_dim
@@ -155,6 +156,19 @@ class DiffusionPolicyTrainer:
         self.action_normalizer = None
         self.obs_normalizer = None  # 新增 obs 归一化器
         self.valid_indices_path = None  # 预计算的有效索引路径
+        self.nav_field = None  # 导航场 (2, H, W)
+    
+    def _load_nav_field(self) -> np.ndarray:
+        """加载导航场数据"""
+        nav_path = PROJECT_ROOT / "data" / "processed" / "nav_baseline.npz"
+        if not nav_path.exists():
+            raise FileNotFoundError(f"Navigation field not found: {nav_path}")
+        
+        nav_data = np.load(nav_path)
+        # nav_y, nav_x 分别是 (H, W)，堆叠成 (2, H, W) = (nav_x, nav_y)
+        nav_field = np.stack([nav_data["nav_x"], nav_data["nav_y"]], axis=0)
+        logger.info(f"Loaded navigation field: shape={nav_field.shape}")
+        return nav_field
     
     def setup_data(self, val_ratio: float = 0.1, valid_indices_path: str | Path = None):
         """设置数据加载器
@@ -165,6 +179,9 @@ class DiffusionPolicyTrainer:
         """
         logger.info(f"Loading data from {self.h5_path}")
         
+        # 加载导航场
+        self.nav_field = self._load_nav_field()
+        
         # 检查是否存在预计算索引
         if valid_indices_path is None:
             default_path = PROJECT_ROOT / "data" / "output" / "valid_indices.npy"
@@ -174,12 +191,13 @@ class DiffusionPolicyTrainer:
         
         self.valid_indices_path = valid_indices_path
         
-        # 创建完整数据集（可能加载预计算索引）
+        # 创建完整数据集（包含导航场条件）
         full_dataset = TrajectorySlidingWindow(
             h5_path=self.h5_path,
             history=self.history,
             future=self.future,
             valid_indices_path=valid_indices_path,
+            nav_field=self.nav_field,  # 传递导航场
         )
         
         total_samples = len(full_dataset)
@@ -250,7 +268,7 @@ class DiffusionPolicyTrainer:
             obs_list.append(sample["obs"].numpy())
         
         actions = np.stack(actions, axis=0)  # (N, future, 2)
-        obs_arr = np.stack(obs_list, axis=0)  # (N, history, 4)
+        obs_arr = np.stack(obs_list, axis=0)  # (N, history, 6)
         
         # Action 归一化
         self.action_normalizer = ActionNormalizer(mode="minmax")
@@ -259,18 +277,22 @@ class DiffusionPolicyTrainer:
         logger.info(f"Action normalizer fitted: min={self.action_normalizer.normalizer.min_val}, "
                    f"max={self.action_normalizer.normalizer.max_val}")
         
-        # Obs 归一化 (分别对 position 和 velocity)
+        # Obs 归一化 (分别对 position, velocity, nav_direction)
         positions = obs_arr[..., :2]  # (N, history, 2)
-        velocities = obs_arr[..., 2:]  # (N, history, 2)
+        velocities = obs_arr[..., 2:4]  # (N, history, 2)
+        nav_directions = obs_arr[..., 4:6] if obs_arr.shape[-1] >= 6 else None  # (N, history, 2)
         
-        self.obs_normalizer = ObsNormalizer(mode="minmax")
-        self.obs_normalizer.fit(positions, velocities)
+        self.obs_normalizer = ObsNormalizer(mode="minmax", include_nav=(nav_directions is not None))
+        self.obs_normalizer.fit(positions, velocities, nav_directions)
         
         logger.info(f"Obs normalizer fitted:")
         logger.info(f"  Position: min={self.obs_normalizer.pos_normalizer.min_val}, "
                    f"max={self.obs_normalizer.pos_normalizer.max_val}")
         logger.info(f"  Velocity: min={self.obs_normalizer.vel_normalizer.min_val}, "
                    f"max={self.obs_normalizer.vel_normalizer.max_val}")
+        if self.obs_normalizer.include_nav:
+            logger.info(f"  NavDir: min={self.obs_normalizer.nav_normalizer.min_val}, "
+                       f"max={self.obs_normalizer.nav_normalizer.max_val}")
     
     def setup_model(self):
         """初始化模型和优化器"""
