@@ -95,29 +95,38 @@ def visualize_phase1(output_path: Path = None):
     else:
         weight_col = None
     
-    # 坐标列：如果没有 grid_x/grid_y，需要从 lat/lon 转换
+    # 坐标列：使用保存的 raster_meta.json 进行正确转换
     if 'grid_x' not in sinks_df.columns and 'lat' in sinks_df.columns:
-        # 需要将地理坐标转换为栅格坐标
-        # 从 walkable_mask 的形状和 sinks 的 bbox 推断变换
-        lat_min, lat_max = sinks_df['lat'].min(), sinks_df['lat'].max()
-        lon_min, lon_max = sinks_df['lon'].min(), sinks_df['lon'].max()
-        
-        # 增加一些 padding（与 geo_rasterizer 保持一致）
-        padding_km = 5.0
-        lat_per_km = 1.0 / 111.0
-        lon_per_km = 1.0 / (111.320 * np.cos(np.radians(sinks_df['lat'].mean())) + 1e-9)
-        pad_lat = padding_km * lat_per_km
-        pad_lon = padding_km * lon_per_km
-        
-        lat_min_ext = lat_min - pad_lat
-        lat_max_ext = lat_max + pad_lat
-        lon_min_ext = lon_min - pad_lon
-        lon_max_ext = lon_max + pad_lon
-        
-        # 计算栅格坐标（假设 100m 分辨率）
-        # X 对应 lon，Y 对应 lat
-        sinks_df['grid_x'] = ((sinks_df['lon'] - lon_min_ext) / (lon_max_ext - lon_min_ext) * W).astype(int)
-        sinks_df['grid_y'] = ((sinks_df['lat'] - lat_min_ext) / (lat_max_ext - lat_min_ext) * H).astype(int)
+        # 尝试读取元数据
+        import json
+        meta_path = PROJECT_ROOT / "data" / "processed" / "raster_meta.json"
+        if meta_path.exists():
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+            north, south, east, west = meta["bbox"]
+            # 注意: X 对应 lon，Y 对应 lat
+            # 栅格原点在左下角（west, south）
+            sinks_df['grid_x'] = ((sinks_df['lon'] - west) / (east - west) * W).astype(int)
+            sinks_df['grid_y'] = ((sinks_df['lat'] - south) / (north - south) * H).astype(int)
+        else:
+            # 回退：使用 sinks 的 bbox + padding
+            lat_min, lat_max = sinks_df['lat'].min(), sinks_df['lat'].max()
+            lon_min, lon_max = sinks_df['lon'].min(), sinks_df['lon'].max()
+            
+            # 增加 padding（与 geo_rasterizer 保持一致）
+            padding_km = 5.0
+            lat_per_km = 1.0 / 111.0
+            lon_per_km = 1.0 / (111.320 * np.cos(np.radians(sinks_df['lat'].mean())) + 1e-9)
+            pad_lat = padding_km * lat_per_km
+            pad_lon = padding_km * lon_per_km
+            
+            south = lat_min - pad_lat
+            north = lat_max + pad_lat
+            west = lon_min - pad_lon
+            east = lon_max + pad_lon
+            
+            sinks_df['grid_x'] = ((sinks_df['lon'] - west) / (east - west) * W).astype(int)
+            sinks_df['grid_y'] = ((sinks_df['lat'] - south) / (north - south) * H).astype(int)
     
     # 创建图形
     fig = plt.figure(figsize=(14, 5))
@@ -427,8 +436,8 @@ def visualize_phase3(output_path: Path = None, num_trajectories: int = 50):
             lc.set_array(speeds)
             ax1.add_collection(lc)
     
-    cbar = plt.colorbar(im, ax=ax1, shrink=0.7, pad=0.02)
-    cbar.set_label('Trajectory Density', fontsize=9)
+    cbar = plt.colorbar(im, ax=ax1, shrink=0.6, pad=0.01)
+    cbar.set_label('Density', fontsize=8)
     
     ax1.set_title('(a) Trajectory Distribution & Density', fontweight='bold')
     ax1.set_xlabel('Grid X (100m/pixel)')
@@ -508,17 +517,12 @@ def visualize_phase3(output_path: Path = None, num_trajectories: int = 50):
     
     on_road_ratio = on_road_count / total_count if total_count > 0 else 0
     
-    # 轨迹效率（直线距离 / 实际距离）
-    efficiencies = []
-    for n in range(min(N, 1000)):
-        traj = positions[:, n, :]
-        valid = (traj[:, 0] > 0) & (traj[:, 1] > 0)
-        if valid.sum() > 10:
-            traj_valid = traj[valid]
-            straight_dist = np.linalg.norm(traj_valid[-1] - traj_valid[0])
-            path_dist = np.sum(np.sqrt(np.sum(np.diff(traj_valid, axis=0)**2, axis=1)))
-            if path_dist > 0:
-                efficiencies.append(straight_dist / path_dist)
+    # 有效运动比例（速度 > 0.1 的样本）
+    if velocities is not None:
+        speeds_all = np.sqrt(velocities[:, :, 0]**2 + velocities[:, :, 1]**2)
+        moving_ratio = np.mean(speeds_all > 0.1)
+    else:
+        moving_ratio = 0.0
     
     stats_text = (
         f"━━━ Simulation Statistics ━━━\n\n"
@@ -527,7 +531,7 @@ def visualize_phase3(output_path: Path = None, num_trajectories: int = 50):
         f"Total Samples: {T * N:,}\n\n"
         f"━━━ Quality Metrics ━━━\n\n"
         f"On-Road Ratio: {on_road_ratio*100:.1f}%\n"
-        f"Path Efficiency: {np.mean(efficiencies)*100:.1f}%\n"
+        f"Moving Ratio: {moving_ratio*100:.1f}%\n"
         f"Mean Speed: {mean_speed:.2f} px/step"
     )
     

@@ -238,6 +238,22 @@ def build_walkable_and_density(
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     np.save(config.WALKABLE_MASK_PATH, mask)
     np.save(config.TARGET_DENSITY_PATH, density)
+    
+    # 保存 transform 和 bbox 元数据，供可视化使用
+    import json
+    meta = {
+        "bbox": list(bbox),  # (north, south, east, west)
+        "bounds_proj": list(bounds_proj),  # (minx, miny, maxx, maxy) in projected CRS
+        "grid_res_m": config.GRID_RES_M,
+        "shape": list(mask.shape),  # (H, W)
+        "crs": str(target_crs),
+    }
+    meta_path = config.OUTPUT_DIR / "raster_meta.json"
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+    if config.VERBOSE:
+        print(f"saved metadata to {meta_path}")
+    
     if config.VERBOSE:
         print(f"saved mask to {config.WALKABLE_MASK_PATH}")
         print(f"saved density to {config.TARGET_DENSITY_PATH}")
