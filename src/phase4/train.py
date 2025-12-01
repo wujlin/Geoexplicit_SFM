@@ -154,20 +154,39 @@ class DiffusionPolicyTrainer:
         self.val_loader = None
         self.action_normalizer = None
         self.obs_normalizer = None  # 新增 obs 归一化器
+        self.valid_indices_path = None  # 预计算的有效索引路径
     
-    def setup_data(self, val_ratio: float = 0.1):
-        """设置数据加载器"""
+    def setup_data(self, val_ratio: float = 0.1, valid_indices_path: str | Path = None):
+        """设置数据加载器
+        
+        Args:
+            val_ratio: 验证集比例
+            valid_indices_path: 预计算的有效索引文件路径（.npy），用于过滤低速样本
+        """
         logger.info(f"Loading data from {self.h5_path}")
         
-        # 创建完整数据集
+        # 检查是否存在预计算索引
+        if valid_indices_path is None:
+            default_path = PROJECT_ROOT / "data" / "output" / "valid_indices.npy"
+            if default_path.exists():
+                valid_indices_path = default_path
+                logger.info(f"Found precomputed valid indices at {valid_indices_path}")
+        
+        self.valid_indices_path = valid_indices_path
+        
+        # 创建完整数据集（可能加载预计算索引）
         full_dataset = TrajectorySlidingWindow(
             h5_path=self.h5_path,
             history=self.history,
             future=self.future,
+            valid_indices_path=valid_indices_path,
         )
         
         total_samples = len(full_dataset)
-        logger.info(f"Total samples in dataset: {total_samples:,}")
+        if valid_indices_path:
+            logger.info(f"Using filtered dataset: {total_samples:,} high-speed samples")
+        else:
+            logger.info(f"Total samples in dataset: {total_samples:,}")
         
         # 如果数据集太大，进行采样
         if self.max_samples_per_epoch and total_samples > self.max_samples_per_epoch * 1.2:
@@ -489,6 +508,8 @@ def main():
     parser.add_argument("--diffusion_steps", type=int, default=100, help="Diffusion steps")
     parser.add_argument("--max_samples", type=int, default=2_000_000, help="Max samples per epoch")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cuda/cpu)")
+    parser.add_argument("--valid_indices", type=str, default=None, 
+                        help="Path to precomputed valid indices (.npy). If not specified, will look for data/output/valid_indices.npy")
     
     args = parser.parse_args()
     
@@ -504,6 +525,10 @@ def main():
         device=args.device,
     )
     
+    # 设置数据时传入 valid_indices 路径
+    valid_indices_path = args.valid_indices if args.valid_indices else None
+    trainer.setup_data(valid_indices_path=valid_indices_path)
+    trainer.setup_model()
     trainer.train()
 
 
