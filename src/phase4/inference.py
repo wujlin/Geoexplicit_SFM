@@ -365,7 +365,10 @@ def main():
     nav_field = None
     if nav_path.exists():
         nav_data = np.load(nav_path)
-        nav_field = nav_data["nav"]  # (2, H, W)
+        # nav_baseline.npz 存储为 nav_y, nav_x 分量
+        nav_y = nav_data["nav_y"]  # (H, W)
+        nav_x = nav_data["nav_x"]  # (H, W)
+        nav_field = np.stack([nav_y, nav_x], axis=0)  # (2, H, W)
         logger.info(f"Loaded navigation field: shape={nav_field.shape}")
     else:
         logger.warning(f"Navigation field not found: {nav_path}, using pure model prediction")
