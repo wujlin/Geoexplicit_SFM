@@ -94,17 +94,17 @@ class DiffusionPolicyTrainer:
         h5_path: str | Path = None,
         history: int = 2,
         future: int = 8,
-        # 模型配置
-        base_channels: int = 64,
-        cond_dim: int = 32,
-        time_dim: int = 64,
+        # 模型配置 - 增大容量
+        base_channels: int = 128,  # 64 -> 128
+        cond_dim: int = 64,        # 32 -> 64
+        time_dim: int = 64,        # 32 -> 64
         # 扩散配置
         num_diffusion_steps: int = 100,
         beta_schedule: str = "linear",
         # 训练配置
         batch_size: int = 16384,  # 大显存可以用更大 batch
         learning_rate: float = 1e-3,  # 配合超大 batch 提高 lr
-        num_epochs: int = 30,  # 大 batch 收敛更快
+        num_epochs: int = 50,     # 30 -> 50，更多训练
         ema_decay: float = 0.9999,
         max_samples_per_epoch: int = 2_000_000,  # 每 epoch 采样 200万
         # 其他
@@ -271,19 +271,19 @@ class DiffusionPolicyTrainer:
         actions = np.stack(actions, axis=0)  # (N, future, 2)
         obs_arr = np.stack(obs_list, axis=0)  # (N, history, 6)
         
-        # Action 归一化
-        self.action_normalizer = ActionNormalizer(mode="minmax")
+        # Action 归一化 - 使用 zscore (更适合扩散模型)
+        self.action_normalizer = ActionNormalizer(mode="zscore")
         self.action_normalizer.fit(actions)
         
-        logger.info(f"Action normalizer fitted: min={self.action_normalizer.normalizer.min_val}, "
-                   f"max={self.action_normalizer.normalizer.max_val}")
+        logger.info(f"Action normalizer fitted (zscore): mean={self.action_normalizer.normalizer.mean}, "
+                   f"std={self.action_normalizer.normalizer.std}")
         
-        # Obs 归一化 (分别对 position, velocity, nav_direction)
+        # Obs 归一化 (分别对 position, velocity, nav_direction) - 使用 zscore
         positions = obs_arr[..., :2]  # (N, history, 2)
         velocities = obs_arr[..., 2:4]  # (N, history, 2)
         nav_directions = obs_arr[..., 4:6] if obs_arr.shape[-1] >= 6 else None  # (N, history, 2)
         
-        self.obs_normalizer = ObsNormalizer(mode="minmax", include_nav=(nav_directions is not None))
+        self.obs_normalizer = ObsNormalizer(mode="zscore", include_nav=(nav_directions is not None))
         self.obs_normalizer.fit(positions, velocities, nav_directions)
         
         logger.info(f"Obs normalizer fitted:")
@@ -523,13 +523,15 @@ class DiffusionPolicyTrainer:
 def main():
     parser = argparse.ArgumentParser(description="Train Diffusion Policy")
     parser.add_argument("--h5_path", type=str, default=None, help="Path to trajectories.h5")
-    parser.add_argument("--epochs", type=int, default=30, help="Number of epochs")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--batch_size", type=int, default=16384, help="Batch size (larger = faster)")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--history", type=int, default=2, help="History steps")
     parser.add_argument("--future", type=int, default=8, help="Future steps to predict")
     parser.add_argument("--diffusion_steps", type=int, default=100, help="Diffusion steps")
     parser.add_argument("--max_samples", type=int, default=2_000_000, help="Max samples per epoch")
+    parser.add_argument("--base_channels", type=int, default=128, help="UNet base channels")
+    parser.add_argument("--cond_dim", type=int, default=64, help="Condition embedding dim")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cuda/cpu)")
     parser.add_argument("--valid_indices", type=str, default=None, 
                         help="Path to precomputed valid indices (.npy). If not specified, will look for data/output/valid_indices.npy")
@@ -540,6 +542,8 @@ def main():
         h5_path=args.h5_path,
         history=args.history,
         future=args.future,
+        base_channels=args.base_channels,
+        cond_dim=args.cond_dim,
         num_diffusion_steps=args.diffusion_steps,
         batch_size=args.batch_size,
         learning_rate=args.lr,

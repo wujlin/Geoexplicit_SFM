@@ -139,9 +139,13 @@ class ZScoreNormalizer(Normalizer):
 
 
 class ActionNormalizer:
-    """专门用于 action（速度）的归一化器"""
+    """专门用于 action（速度）的归一化器
     
-    def __init__(self, mode: str = "minmax"):
+    注意: 对于 Diffusion Policy，推荐使用 zscore 归一化，
+    因为扩散过程假设数据分布接近 N(0, 1)
+    """
+    
+    def __init__(self, mode: str = "zscore"):  # 默认改为 zscore
         if mode == "minmax":
             self.normalizer = MinMaxNormalizer()
         else:
@@ -174,9 +178,11 @@ class ObsNormalizer:
     观测归一化器：分别对 position、velocity 和 nav_direction 归一化
     obs shape: (history, 6) = (history, [pos_x, pos_y, vel_x, vel_y, nav_x, nav_y])
     兼容旧版 4 维 obs (无 nav_direction)
+    
+    注意: 对于 Diffusion Policy，推荐使用 zscore 归一化
     """
     
-    def __init__(self, mode: str = "minmax", include_nav: bool = True):
+    def __init__(self, mode: str = "zscore", include_nav: bool = True):  # 默认改为 zscore
         self.mode = mode
         self.include_nav = include_nav
         # 分别归一化 position、velocity 和 nav_direction

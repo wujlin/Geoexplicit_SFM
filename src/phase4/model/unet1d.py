@@ -78,14 +78,35 @@ class Up1D(nn.Module):
 
 
 class UNet1D(nn.Module):
-    def __init__(self, obs_dim: int = 4, act_dim: int = 2, base_channels: int = 64, cond_dim: int = 16, time_dim: int = 32):
+    """
+    1D UNet for Diffusion Policy
+    
+    改进点:
+    1. 增大默认通道数 64 -> 128
+    2. 条件注入使用 concat 而非 add，避免信息丢失
+    3. 增加 cond_dim 以容纳更多条件信息
+    """
+    def __init__(self, obs_dim: int = 12, act_dim: int = 2, base_channels: int = 128, 
+                 cond_dim: int = 64, time_dim: int = 64):
         super().__init__()
+        # 时间嵌入
         self.time_embed = nn.Sequential(
             nn.Linear(time_dim, time_dim * 4),
-            nn.ReLU(),
+            nn.GELU(),  # GELU 比 ReLU 更适合 Transformer/Diffusion
             nn.Linear(time_dim * 4, cond_dim),
         )
-        self.obs_proj = nn.Linear(obs_dim, cond_dim)
+        # 观测嵌入 - 更大的投影网络
+        self.obs_proj = nn.Sequential(
+            nn.Linear(obs_dim, cond_dim * 2),
+            nn.GELU(),
+            nn.Linear(cond_dim * 2, cond_dim),
+        )
+        
+        # 条件融合: concat time + obs, 然后投影
+        self.cond_fuse = nn.Sequential(
+            nn.Linear(cond_dim * 2, cond_dim),
+            nn.GELU(),
+        )
 
         self.in_proj = nn.Conv1d(act_dim, base_channels, kernel_size=3, padding=1)
         self.down1 = Down1D(base_channels, cond_dim)
@@ -102,12 +123,17 @@ class UNet1D(nn.Module):
         """
         x: (B, act_dim, T) noisy action
         timesteps: (B,) int64
-        global_cond: (B, obs_dim) 例如拼接的观测（可选）
+        global_cond: (B, obs_dim) 拼接的观测
         """
+        # 时间嵌入
         t_emb = sinusoidal_embedding(timesteps, self.time_dim)
         t_cond = self.time_embed(t_emb)  # (B, cond_dim)
+        
+        # 观测嵌入
         g_cond = self.obs_proj(global_cond)  # (B, cond_dim)
-        cond = t_cond + g_cond
+        
+        # 条件融合: concat 然后投影 (避免简单相加导致信息丢失)
+        cond = self.cond_fuse(torch.cat([t_cond, g_cond], dim=-1))  # (B, cond_dim)
 
         h = self.in_proj(x)
         h, s1 = self.down1(h, cond)
