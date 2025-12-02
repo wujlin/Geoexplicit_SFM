@@ -286,14 +286,14 @@ class DiffusionPolicyTrainer:
         self.obs_normalizer = ObsNormalizer(mode="zscore", include_nav=(nav_directions is not None))
         self.obs_normalizer.fit(positions, velocities, nav_directions)
         
-        logger.info(f"Obs normalizer fitted:")
-        logger.info(f"  Position: min={self.obs_normalizer.pos_normalizer.min_val}, "
-                   f"max={self.obs_normalizer.pos_normalizer.max_val}")
-        logger.info(f"  Velocity: min={self.obs_normalizer.vel_normalizer.min_val}, "
-                   f"max={self.obs_normalizer.vel_normalizer.max_val}")
+        logger.info(f"Obs normalizer fitted (zscore):")
+        logger.info(f"  Position: mean={self.obs_normalizer.pos_normalizer.mean}, "
+                   f"std={self.obs_normalizer.pos_normalizer.std}")
+        logger.info(f"  Velocity: mean={self.obs_normalizer.vel_normalizer.mean}, "
+                   f"std={self.obs_normalizer.vel_normalizer.std}")
         if self.obs_normalizer.include_nav:
-            logger.info(f"  NavDir: min={self.obs_normalizer.nav_normalizer.min_val}, "
-                       f"max={self.obs_normalizer.nav_normalizer.max_val}")
+            logger.info(f"  NavDir: mean={self.obs_normalizer.nav_normalizer.mean}, "
+                       f"std={self.obs_normalizer.nav_normalizer.std}")
     
     def setup_model(self):
         """初始化模型和优化器"""
