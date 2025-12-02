@@ -173,27 +173,58 @@ class ActionNormalizer:
         return self
 
 
+class IdentityNormalizer(Normalizer):
+    """不做归一化，仅可选地缩放"""
+    
+    def __init__(self, scale: float = 1.0):
+        self.scale = scale
+    
+    def fit(self, data: np.ndarray) -> "IdentityNormalizer":
+        """无需 fit"""
+        return self
+    
+    def transform(self, data: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
+        return data * self.scale
+    
+    def inverse_transform(self, data: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
+        return data / self.scale
+    
+    def state_dict(self) -> dict:
+        return {"scale": self.scale, "type": "identity"}
+    
+    def load_state_dict(self, state: dict) -> "IdentityNormalizer":
+        self.scale = state.get("scale", 1.0)
+        return self
+
+
 class ObsNormalizer:
     """
     观测归一化器：分别对 position、velocity 和 nav_direction 归一化
     obs shape: (history, 6) = (history, [pos_x, pos_y, vel_x, vel_y, nav_x, nav_y])
     兼容旧版 4 维 obs (无 nav_direction)
     
-    注意: 对于 Diffusion Policy，推荐使用 zscore 归一化
+    注意: 
+    - 对于 position 和 velocity，推荐使用 zscore 归一化
+    - 对于 nav_direction，**不应使用 zscore**，因为它会扭曲方向角度
+      (不同维度的 std 不同会改变向量的角度)
+    - nav_direction 已经是单位向量 [-1,1]，仅需简单 scale 到与其他维度匹配的范围
     """
     
     def __init__(self, mode: str = "zscore", include_nav: bool = True):  # 默认改为 zscore
         self.mode = mode
         self.include_nav = include_nav
-        # 分别归一化 position、velocity 和 nav_direction
+        # 分别归一化 position、velocity
         if mode == "minmax":
             self.pos_normalizer = MinMaxNormalizer()
             self.vel_normalizer = MinMaxNormalizer()
+            # nav 使用 minmax 没问题，因为 min/max 都是 -1/1
             self.nav_normalizer = MinMaxNormalizer() if include_nav else None
         else:
             self.pos_normalizer = ZScoreNormalizer()
             self.vel_normalizer = ZScoreNormalizer()
-            self.nav_normalizer = ZScoreNormalizer() if include_nav else None
+            # 关键修复: nav_direction 使用 IdentityNormalizer 而非 ZScore
+            # scale=2.0 使其范围从 [-1,1] 变为 [-2,2]，与 zscore 后的其他维度范围匹配
+            self.nav_normalizer = IdentityNormalizer(scale=2.0) if include_nav else None
     
     def fit(self, positions: np.ndarray, velocities: np.ndarray, 
             nav_directions: np.ndarray = None) -> "ObsNormalizer":
@@ -207,13 +238,19 @@ class ObsNormalizer:
         self.pos_normalizer.fit(pos_flat)
         self.vel_normalizer.fit(vel_flat)
         
-        if self.include_nav and nav_directions is not None:
-            nav_flat = nav_directions.reshape(-1, 2)
-            self.nav_normalizer.fit(nav_flat)
-        elif self.include_nav:
-            # nav_direction 是单位向量，范围 [-1, 1]
-            self.nav_normalizer.min_val = np.array([-1.0, -1.0])
-            self.nav_normalizer.max_val = np.array([1.0, 1.0])
+        # nav_normalizer: 
+        # - IdentityNormalizer: 不需要真正的 fit (只是 scale)
+        # - MinMaxNormalizer: 需要 fit 数据
+        if self.include_nav and self.nav_normalizer is not None:
+            if nav_directions is not None:
+                nav_flat = nav_directions.reshape(-1, 2)
+                self.nav_normalizer.fit(nav_flat)
+            else:
+                # 如果没有提供 nav 数据，设置默认值
+                if isinstance(self.nav_normalizer, MinMaxNormalizer):
+                    self.nav_normalizer.min_val = np.array([-1.0, -1.0])
+                    self.nav_normalizer.max_val = np.array([1.0, 1.0])
+                # IdentityNormalizer 不需要额外设置
         
         return self
     
@@ -298,10 +335,21 @@ class ObsNormalizer:
         self.vel_normalizer.load_state_dict(state["vel_normalizer"])
         
         if self.include_nav and "nav_normalizer" in state:
-            if self.nav_normalizer is None:
-                if self.mode == "minmax":
-                    self.nav_normalizer = MinMaxNormalizer()
-                else:
+            nav_state = state["nav_normalizer"]
+            # 根据 state 中的类型信息判断使用哪种归一化器
+            if nav_state.get("type") == "identity":
+                # IdentityNormalizer
+                if self.nav_normalizer is None or not isinstance(self.nav_normalizer, IdentityNormalizer):
+                    self.nav_normalizer = IdentityNormalizer()
+            elif "mean" in nav_state:
+                # ZScoreNormalizer (旧版兼容)
+                if self.nav_normalizer is None or not isinstance(self.nav_normalizer, ZScoreNormalizer):
                     self.nav_normalizer = ZScoreNormalizer()
-            self.nav_normalizer.load_state_dict(state["nav_normalizer"])
+            elif "min_val" in nav_state:
+                # MinMaxNormalizer
+                if self.nav_normalizer is None or not isinstance(self.nav_normalizer, MinMaxNormalizer):
+                    self.nav_normalizer = MinMaxNormalizer()
+            
+            if self.nav_normalizer is not None:
+                self.nav_normalizer.load_state_dict(nav_state)
         return self
