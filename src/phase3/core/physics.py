@@ -46,6 +46,9 @@ def step_kernel(
     - wall_push_strength: 斥力强度
     - off_road_recovery: 掉网时的恢复推力
     - momentum: 动量系数（0=无惯性，1=完全惯性）
+    
+    注意：velocity 存储的是「实际位移 / dt」，而非「目标速度」。
+    这确保了 velocity 与位置变化一致，便于 Diffusion 模型学习。
     """
     N = pos.shape[0]
     H, W = sdf.shape
@@ -60,6 +63,9 @@ def step_kernel(
         # 边界 clamp（防止越界）
         y = max(1.0, min(y, H - 2.0))
         x = max(1.0, min(x, W - 2.0))
+        
+        # 保存原位置，用于最后计算实际 velocity
+        old_y, old_x = y, x
         
         yi = int(y)
         xi = int(x)
@@ -149,7 +155,10 @@ def step_kernel(
         
         pos[i, 0] = new_y
         pos[i, 1] = new_x
-        vel[i, 0] = eff_vy
-        vel[i, 1] = eff_vx
+        
+        # 计算实际 velocity = (new_pos - old_pos) / dt
+        # 这确保 velocity 反映真实移动，而非动量混合后的「目标速度」
+        vel[i, 0] = (new_y - old_y) / dt
+        vel[i, 1] = (new_x - old_x) / dt
     
     return 0
