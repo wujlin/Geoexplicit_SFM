@@ -165,8 +165,9 @@ class DiffusionPolicyTrainer:
             raise FileNotFoundError(f"Navigation field not found: {nav_path}")
         
         nav_data = np.load(nav_path)
-        # nav_y, nav_x 分别是 (H, W)，堆叠成 (2, H, W) = (nav_x, nav_y)
-        nav_field = np.stack([nav_data["nav_x"], nav_data["nav_y"]], axis=0)
+        # nav_y, nav_x 分别是 (H, W)，堆叠成 (2, H, W) = (nav_y, nav_x)
+        # 注意：与 Phase 3 environment.py 保持一致
+        nav_field = np.stack([nav_data["nav_y"], nav_data["nav_x"]], axis=0)
         logger.info(f"Loaded navigation field: shape={nav_field.shape}")
         return nav_field
     
