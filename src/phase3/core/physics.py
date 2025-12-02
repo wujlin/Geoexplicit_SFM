@@ -9,12 +9,15 @@ def bilinear_sample(field, y, x):
     """
     field: (2, H, W)
     y, x: scalar (float)
-    返回 (2,) 最近邻采样（不使用双线性插值，因为导航场在窄道路上方向变化剧烈）
+    返回 (2,) 使用 int() 截断采样（与 is_on_road 判断保持一致）
+    
+    注意：必须使用 int() 而非 round()，因为 step_kernel 中用 int() 判断 is_on_road。
+    如果使用 round()，边缘粒子可能从 off-road 位置采样到 nav=(0,0)，导致卡死。
     """
     h, w = field.shape[1], field.shape[2]
-    # 最近邻
-    yi = int(round(y))
-    xi = int(round(x))
+    # 使用 int() 截断，与 step_kernel 中的 yi=int(y), xi=int(x) 保持一致
+    yi = int(y)
+    xi = int(x)
     yi = max(0, min(yi, h - 1))
     xi = max(0, min(xi, w - 1))
     return field[:, yi, xi].copy()
