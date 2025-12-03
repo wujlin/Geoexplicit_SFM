@@ -292,8 +292,12 @@ class DiffusionPolicyTrainer:
         logger.info(f"  Velocity: mean={self.obs_normalizer.vel_normalizer.mean}, "
                    f"std={self.obs_normalizer.vel_normalizer.std}")
         if self.obs_normalizer.include_nav:
-            logger.info(f"  NavDir: mean={self.obs_normalizer.nav_normalizer.mean}, "
-                       f"std={self.obs_normalizer.nav_normalizer.std}")
+            nav_norm = self.obs_normalizer.nav_normalizer
+            # IdentityNormalizer 没有 mean/std，显示 scale
+            if hasattr(nav_norm, 'mean'):
+                logger.info(f"  NavDir: mean={nav_norm.mean}, std={nav_norm.std}")
+            elif hasattr(nav_norm, 'scale'):
+                logger.info(f"  NavDir: IdentityNormalizer(scale={nav_norm.scale})")
     
     def setup_model(self):
         """初始化模型和优化器"""

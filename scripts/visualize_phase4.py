@@ -65,7 +65,7 @@ def create_visualization(
     approaching_rate = (dist_change < 0).mean() * 100
     
     ax.set_title(f"Diffusion Policy Trajectories (n={len(trajectories)})\n"
-                 f"Approaching Rate: {approaching_rate:.1f}%  |  "
+                 f"SEMCOG 7-County Region  |  Approaching Rate: {approaching_rate:.1f}%  |  "
                  f"Mean Distance Change: {dist_change.mean():.1f} px", fontsize=14)
     ax.set_xlabel("Y (pixels)", fontsize=12)
     ax.set_ylabel("X (pixels)", fontsize=12)
