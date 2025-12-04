@@ -1,53 +1,64 @@
-# Phase 3 - Synthetic Trajectory Data Factory（更新版）
+# Phase 3 - 轨迹仿真
 
-本阶段聚焦高吞吐轨迹生成，针对 1px 路网的“走廊陷阱”进行了多项修复，确保粒子能沿路网产生清晰流线。
+## 目标
 
-## 核心问题与修复
-- 导航场过弱/抵消：改用测地距离场负梯度，或最近邻方向（避免双线性在窄路上互相抵消）。
-- 非 walkable 区无法返回：SDF 梯度用于推回路网，掉网自动恢复。
-- Sink 区生成：采样域排除 dist=0 的 sink 区（valid = mask & dist>0 & dist<阈值）。
-- 边界梯度污染：采用最小邻居/最近邻方向，避免中心差分被 mask 污染。
+基于个体目的地采样和对应导航场，生成带 target_sink_id 的轨迹数据。
 
-## 物理模型（带动量的 Langevin 版本）
+## 核心改进
+
+**旧方案**: 全局导航场 + 固定步数
+
+**新方案**:
+1. 每个 agent 根据 OD 概率采样目的地
+2. 使用对应 sink 的导航场
+3. 到达终止条件
+
+## 物理模型
+
+Langevin 动力学 + 道路约束:
 ```
-v_{t+1} = β · v_t + (1-β) · (V0 · n̂(x) + F_wall + η)
-pos_{t+1} = pos_t + v_{t+1} · dt
+v_{t+1} = β·v_t + (1-β)·(V0·nav + F_wall + η)
+pos_{t+1} = pos_t + v_{t+1}·dt
 ```
-- 导航方向 n̂：距离场/score 的最近邻方向。
-- 道路约束：若脱网，选择 4 邻域中与速度点积最大的可行走像素前进。
-- 噪声：η ~ N(0, σ^2)。
-- 墙/恢复：靠近边界时推回，OFF_ROAD_RECOVERY 较大。
 
-### 建议参数（技术总结版）
+**参数**:
 | 参数 | 值 | 说明 |
 |------|-----|------|
-| V0 | 1.5 px/步 | 基础速度 |
-| DT | 1.0 | 时间步长 |
-| NOISE_SIGMA | 0.05 | 低噪声 |
-| MOMENTUM β | 0.85 | 平滑轨迹 |
-| WALL_PUSH | 2.0 | 墙壁斥力/恢复 |
-| OFF_ROAD_RECOVERY | 5.0 | 掉网恢复力 |
+| V0 | 1.5 | 基础速度 (px/step) |
+| MOMENTUM | 0.7 | 动量系数 |
+| NOISE_SIGMA | 0.08 | 噪声强度 |
+| ARRIVAL_THRESH | 50 | 到达判定 (px, ~5km) |
+| MAX_STEPS | 2000 | 最大步数 |
 
-## 产出
-- `data/output/trajectories.h5`：positions/velocities 时间序列，粒子池重生；可视化脚本断开重生跳线。
-- 性能参考（1px 路网，2000步）：到达率 ~45.7%，平均位移 ~62.4 像素，on-road ~50%，速度均值 ~2.3 px/frame。
+## 仿真流程
 
-## 模块结构
-```
-src/phase3/
-  config.py                # 物理参数
-  core/environment.py      # 加载 mask/导航场，SDF
-  core/physics.py          # Numba 核心步进（导航+墙+噪声）
-  simulation/spawner.py    # 采样/重生（排除 sink 区域）
-  simulation/recorder.py   # 分块写入 HDF5
-main_gen_data.py           # 无头生成轨迹
-scripts/inspect_trajectories.py  # 统计+抽样图
-scripts/plot_trajectories_clean.py # 去跳线轨迹图
+```python
+for agent in agents:
+    # 1. 采样起点 (基于距离场权重)
+    origin = sample_origin(walkable_mask, distance_field)
+    
+    # 2. 根据起点位置采样目的地
+    origin_tract = pixel_to_tract(origin)
+    target_sink = sample_sink(od_sampler[origin_tract])
+    
+    # 3. 加载对应导航场
+    nav_field = load_nav_field(target_sink)
+    
+    # 4. 仿真直到到达或超时
+    while not arrived and steps < MAX_STEPS:
+        step(nav_field)
 ```
 
-## 使用
-```
-python main_gen_data.py --agents 10000 --steps 10000
-python scripts/inspect_trajectories.py
-python scripts/plot_trajectories_clean.py
-```
+## 输入/输出
+
+**输入**:
+- `nav_fields/sink_{i}.npz`: 35 个导航场
+- `od_sampler.npz`: OD 采样表
+- `walkable_mask.npy`: 道路 mask
+
+**输出**:
+- `trajectories.h5`:
+  - `positions`: (T, N, 2)
+  - `velocities`: (T, N, 2)
+  - `target_sink_id`: (N,)
+  - `arrival_step`: (N,)

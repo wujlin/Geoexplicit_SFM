@@ -156,19 +156,18 @@ class DiffusionPolicyTrainer:
         self.action_normalizer = None
         self.obs_normalizer = None  # 新增 obs 归一化器
         self.valid_indices_path = None  # 预计算的有效索引路径
-        self.nav_field = None  # 导航场 (2, H, W)
+        self.nav_field = None  # 全局导航场 (2, H, W)（兼容旧版）
+        self.nav_fields_dir = None  # 个体导航场目录
     
     def _load_nav_field(self) -> np.ndarray:
-        """加载导航场数据"""
+        """加载全局导航场数据（兼容旧版）"""
         nav_path = PROJECT_ROOT / "data" / "processed" / "nav_baseline.npz"
         if not nav_path.exists():
-            raise FileNotFoundError(f"Navigation field not found: {nav_path}")
+            return None  # 可能使用个体导航场
         
         nav_data = np.load(nav_path)
-        # nav_y, nav_x 分别是 (H, W)，堆叠成 (2, H, W) = (nav_y, nav_x)
-        # 注意：与 Phase 3 environment.py 保持一致
         nav_field = np.stack([nav_data["nav_y"], nav_data["nav_x"]], axis=0)
-        logger.info(f"Loaded navigation field: shape={nav_field.shape}")
+        logger.info(f"Loaded global navigation field: shape={nav_field.shape}")
         return nav_field
     
     def setup_data(self, val_ratio: float = 0.1, valid_indices_path: str | Path = None):
@@ -180,8 +179,14 @@ class DiffusionPolicyTrainer:
         """
         logger.info(f"Loading data from {self.h5_path}")
         
-        # 加载导航场
-        self.nav_field = self._load_nav_field()
+        # 检查是否有个体导航场
+        nav_fields_dir = PROJECT_ROOT / "data" / "processed" / "nav_fields"
+        if nav_fields_dir.exists():
+            self.nav_fields_dir = nav_fields_dir
+            logger.info(f"Found individual navigation fields at {nav_fields_dir}")
+        else:
+            # 回退到全局导航场
+            self.nav_field = self._load_nav_field()
         
         # 检查是否存在预计算索引
         if valid_indices_path is None:
@@ -192,13 +197,14 @@ class DiffusionPolicyTrainer:
         
         self.valid_indices_path = valid_indices_path
         
-        # 创建完整数据集（包含导航场条件）
+        # 创建完整数据集（支持个体导航场）
         full_dataset = TrajectorySlidingWindow(
             h5_path=self.h5_path,
             history=self.history,
             future=self.future,
             valid_indices_path=valid_indices_path,
-            nav_field=self.nav_field,  # 传递导航场
+            nav_field=self.nav_field,  # 全局导航场（可能为 None）
+            nav_fields_dir=self.nav_fields_dir,  # 个体导航场目录
         )
         
         total_samples = len(full_dataset)

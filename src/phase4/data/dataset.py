@@ -3,6 +3,7 @@ HDF5 轨迹数据集：滑动窗口读取 (observation, action)
 - observation: 过去 history 步的位置、速度、导航方向 (shape: history, 6)
 - action: 未来 future 步的速度序列 (shape: future, 2)
 - 支持加载预计算的有效样本索引（过滤低速样本）
+- 支持个体目的地：每个 agent 有独立的目的地，使用对应的导航场
 
 使用方法：
 1. 先运行预处理：python scripts/precompute_valid_indices.py
@@ -12,7 +13,8 @@ HDF5 轨迹数据集：滑动窗口读取 (observation, action)
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
+import json
 
 import h5py
 import numpy as np
@@ -29,18 +31,33 @@ class TrajectorySlidingWindow(Dataset):
         stride: int = 1,
         agent_ids: Optional[np.ndarray] = None,
         valid_indices_path: Optional[str | Path] = None,  # 预计算的有效索引文件
-        nav_field: Optional[np.ndarray] = None,  # (2, H, W) 导航场方向
+        nav_field: Optional[np.ndarray] = None,  # (2, H, W) 全局导航场（兼容旧版）
+        nav_fields_dir: Optional[str | Path] = None,  # 个体导航场目录
     ):
         self.h5_path = Path(h5_path)
         self.history = history
         self.future = future
         self.stride = stride
-        self.nav_field = nav_field  # 导航场条件
+        self.nav_field = nav_field  # 全局导航场（兼容旧版）
+        
+        # 加载个体导航场
+        self.nav_fields: Dict[int, np.ndarray] = {}
+        self.has_individual_nav = False
+        if nav_fields_dir is not None:
+            self._load_nav_fields(Path(nav_fields_dir))
 
         with h5py.File(self.h5_path, "r") as f:
             self.pos_shape = f["positions"].shape  # (T, N, 2)
             self.has_vel = "velocities" in f
+            self.has_dest = "destinations" in f
             T, N, _ = self.pos_shape
+            
+            # 加载目的地信息（如果存在）
+            if self.has_dest:
+                self.destinations = f["destinations"][:]  # (T, N)
+                print(f"Loaded destinations: shape={self.destinations.shape}")
+            else:
+                self.destinations = None
         
         if agent_ids is None:
             self.agent_ids = np.arange(N, dtype=np.int64)
@@ -76,6 +93,27 @@ class TrajectorySlidingWindow(Dataset):
             print(f"Using all {self.total:,} samples (no filtering)")
         
         self._fh = None
+    
+    def _load_nav_fields(self, nav_fields_dir: Path):
+        """加载所有个体导航场到内存"""
+        index_path = nav_fields_dir / "nav_fields_index.json"
+        if not index_path.exists():
+            print(f"Warning: nav_fields_index.json not found in {nav_fields_dir}")
+            return
+        
+        with open(index_path) as f:
+            index = json.load(f)
+        
+        print(f"Loading {index['num_sinks']} individual navigation fields...")
+        
+        for sink_id in index["sink_ids"]:
+            path = nav_fields_dir / f"nav_field_{sink_id:03d}.npz"
+            data = np.load(path)
+            # 存储为 (2, H, W) 格式
+            self.nav_fields[sink_id] = np.stack([data["nav_y"], data["nav_x"]], axis=0)
+        
+        self.has_individual_nav = True
+        print(f"  Loaded {len(self.nav_fields)} navigation fields")
 
     def __len__(self):
         return self.total
@@ -84,16 +122,30 @@ class TrajectorySlidingWindow(Dataset):
         if self._fh is None:
             self._fh = h5py.File(self.h5_path, "r")
     
-    def _get_nav_direction(self, pos: np.ndarray) -> np.ndarray:
-        """获取位置处的导航方向 (2,)"""
-        if self.nav_field is None:
-            return np.zeros(2, dtype=np.float32)
+    def _get_nav_direction(self, pos: np.ndarray, dest: Optional[int] = None) -> np.ndarray:
+        """
+        获取位置处的导航方向 (2,)
         
-        H, W = self.nav_field.shape[1], self.nav_field.shape[2]
-        y = int(np.clip(pos[0], 0, H - 1))
-        x = int(np.clip(pos[1], 0, W - 1))
-        nav_dir = self.nav_field[:, y, x]
-        return nav_dir.astype(np.float32)
+        Args:
+            pos: (2,) 位置 [y, x]
+            dest: 目的地 sink ID（如果有个体导航场）
+        """
+        # 优先使用个体导航场
+        if self.has_individual_nav and dest is not None and dest in self.nav_fields:
+            nav = self.nav_fields[dest]
+            H, W = nav.shape[1], nav.shape[2]
+            y = int(np.clip(pos[0], 0, H - 1))
+            x = int(np.clip(pos[1], 0, W - 1))
+            return nav[:, y, x].astype(np.float32)
+        
+        # 回退到全局导航场
+        if self.nav_field is not None:
+            H, W = self.nav_field.shape[1], self.nav_field.shape[2]
+            y = int(np.clip(pos[0], 0, H - 1))
+            x = int(np.clip(pos[1], 0, W - 1))
+            return self.nav_field[:, y, x].astype(np.float32)
+        
+        return np.zeros(2, dtype=np.float32)
 
     def __getitem__(self, idx):
         self._ensure_open()
@@ -104,6 +156,11 @@ class TrajectorySlidingWindow(Dataset):
 
         pos_ds = self._fh["positions"]
         vel_ds = self._fh["velocities"] if self.has_vel else None
+        
+        # 获取目的地（如果存在）
+        dest = None
+        if self.destinations is not None:
+            dest = int(self.destinations[t_idx, agent])
 
         # 历史 obs
         pos_hist = pos_ds[t_idx : t_idx + self.history, agent, :]  # (history,2)
@@ -113,10 +170,10 @@ class TrajectorySlidingWindow(Dataset):
             pos_hist_ext = pos_ds[t_idx : t_idx + self.history + 1, agent, :]
             vel_hist = np.diff(pos_hist_ext, axis=0)
         
-        # 获取每个历史帧的导航方向
+        # 获取每个历史帧的导航方向（使用对应目的地的导航场）
         nav_hist = np.zeros((self.history, 2), dtype=np.float32)
         for i in range(self.history):
-            nav_hist[i] = self._get_nav_direction(pos_hist[i])
+            nav_hist[i] = self._get_nav_direction(pos_hist[i], dest)
 
         # obs: position + velocity + nav_direction
         obs = np.concatenate([pos_hist, vel_hist, nav_hist], axis=-1)  # (history, 6)
@@ -136,6 +193,7 @@ class TrajectorySlidingWindow(Dataset):
             "action": action,  # (future, 2)
             "agent": agent,
             "t0": t_idx,
+            "dest": dest if dest is not None else -1,
         }
 
     def __del__(self):
