@@ -613,3 +613,50 @@ cos_sim = np.dot(pred, gt) / (np.linalg.norm(pred) * np.linalg.norm(gt))
 - [ ] 最优 cfg_dropout 比例（当前 0.1，可尝试 0.15~0.2）
 - [ ] 最优 guidance_scale（推理时）
 
+### 10.6 FiLM 初始化问题 (2025-12-04 发现)
+
+**问题**：
+FiLM 公式 `h = gamma * h + beta`，如果 gamma 初始化为 0 附近，训练时 gamma 可能保持接近 0，导致：
+- 特征 h 被 gamma 杀死
+- 模型主要依赖 beta（加性偏置），而非 gamma（乘性调制）
+- condition 敏感性很低
+
+**诊断**：
+```
+训练后 FiLM 参数:
+  gamma weights: mean≈0, std≈0.07, max≈0.16
+  gamma bias: mean≈0, std≈0.07
+  
+问题：gamma bias ≈ 0 意味着 gamma ≈ 0，特征被杀死
+```
+
+**最终解决方案** (v3):
+
+采用 **AdaLN** + **obs_scale** 组合：
+
+1. **AdaLN**：gamma bias 初始化为 1（不是 0）
+   ```python
+   nn.init.ones_(self.cond_gamma.bias)  # gamma ≈ 1，特征不被杀死
+   nn.init.zeros_(self.cond_beta.bias)  # beta ≈ 0
+   ```
+
+2. **obs_scale**：可学习缩放因子，初始值 2.0
+   ```python
+   self.obs_scale = nn.Parameter(torch.tensor(2.0))
+   g_cond = self.obs_proj(global_cond) * self.obs_scale
+   ```
+
+3. **去除 cond_fuse**：time 和 obs 直接相加（标准 DDPM 做法）
+   ```python
+   cond = t_cond + g_cond  # 不再用 concat + Linear
+   ```
+
+**验证结果**：
+| 版本 | cond/input ratio | 备注 |
+|-----|-----------------|------|
+| 旧加法版本 (训练后) | 0.15 | 基线 |
+| FiLM gamma*h (训练后) | 0.05 | gamma→0 |
+| AdaLN + obs_scale=2.0 (随机初始化) | 0.25 | 改进 |
+
+**需要重新训练才能生效**。
+

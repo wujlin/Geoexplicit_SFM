@@ -31,10 +31,15 @@ def sinusoidal_embedding(timesteps: torch.Tensor, dim: int) -> torch.Tensor:
 
 class ResBlock1D(nn.Module):
     """
-    ResBlock with FiLM (Feature-wise Linear Modulation) conditioning.
+    ResBlock with AdaLN (Adaptive Layer Normalization) conditioning.
     
-    FiLM: h = gamma * h + beta (乘法 + 加法，比纯加法更强)
-    这使得 condition 无法被忽略，因为 gamma=0 会杀死所有特征。
+    AdaLN 应用于 LayerNorm 之后: y = gamma * LN(x) + beta
+    与 DiT (Diffusion Transformer) 使用相同的策略。
+    
+    关键点:
+    1. condition 调制的是归一化后的特征，而非原始特征
+    2. gamma bias 初始化为 1，weight 使用正常初始化
+    3. 这确保初始时 gamma≈1（特征不被杀死），同时 condition 有合理的影响
     """
     def __init__(self, in_ch, out_ch, cond_ch):
         super().__init__()
@@ -42,21 +47,29 @@ class ResBlock1D(nn.Module):
         self.conv2 = nn.Conv1d(out_ch, out_ch, kernel_size=3, padding=1)
         self.norm1 = nn.GroupNorm(8, out_ch)
         self.norm2 = nn.GroupNorm(8, out_ch)
-        # FiLM: 输出 gamma 和 beta
-        self.cond_proj = nn.Linear(cond_ch, out_ch * 2)  # gamma + beta
+        
+        # AdaLN: 分别输出 gamma 和 beta
+        self.cond_gamma = nn.Linear(cond_ch, out_ch)
+        self.cond_beta = nn.Linear(cond_ch, out_ch)
+        
         self.skip = nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
+        
+        # 初始化策略:
+        # gamma: bias=1, weight 正常初始化 → 初始 gamma ≈ 1 + small_variation
+        # beta: bias=0, weight 正常初始化 → 初始 beta ≈ small_variation
+        # 使用默认 Xavier/Kaiming 初始化即可，只需调整 bias
+        nn.init.ones_(self.cond_gamma.bias)
+        nn.init.zeros_(self.cond_beta.bias)
 
     def forward(self, x, cond):
         # x: (B, C, T), cond: (B, cond_ch)
         h = self.conv1(x)
         h = self.norm1(h)
         
-        # FiLM modulation
-        film_params = self.cond_proj(cond)  # (B, out_ch * 2)
-        gamma, beta = film_params.chunk(2, dim=-1)  # 各 (B, out_ch)
-        gamma = gamma.unsqueeze(-1)  # (B, out_ch, 1)
-        beta = beta.unsqueeze(-1)    # (B, out_ch, 1)
-        h = gamma * h + beta  # FiLM: 乘法 + 加法
+        # AdaLN modulation
+        gamma = self.cond_gamma(cond).unsqueeze(-1)  # (B, out_ch, 1)
+        beta = self.cond_beta(cond).unsqueeze(-1)    # (B, out_ch, 1)
+        h = gamma * h + beta
         
         h = F.relu(h)
         h = self.conv2(h)
@@ -97,31 +110,29 @@ class UNet1D(nn.Module):
     
     改进点:
     1. 增大默认通道数 64 -> 128
-    2. 条件注入使用 FiLM (Feature-wise Linear Modulation)
-       FiLM: h = gamma * h + beta，比纯加法更强，condition 无法被忽略
-    3. 增加 cond_dim 以容纳更多条件信息
+    2. 条件注入使用 AdaLN (Adaptive Layer Normalization)
+       AdaLN: h = gamma * h + beta，gamma bias=1 确保初始时特征不被杀死
+    3. time 和 obs 嵌入直接相加（标准 DDPM 做法）
+    4. obs 嵌入使用可学习缩放因子（初始 2.0），确保 condition 有足够影响
     """
     def __init__(self, obs_dim: int = 12, act_dim: int = 2, base_channels: int = 128, 
                  cond_dim: int = 64, time_dim: int = 64):
         super().__init__()
         # 时间嵌入
         self.time_embed = nn.Sequential(
-            nn.Linear(time_dim, time_dim * 4),
-            nn.GELU(),  # GELU 比 ReLU 更适合 Transformer/Diffusion
-            nn.Linear(time_dim * 4, cond_dim),
-        )
-        # 观测嵌入 - 更大的投影网络
-        self.obs_proj = nn.Sequential(
-            nn.Linear(obs_dim, cond_dim * 2),
+            nn.Linear(time_dim, cond_dim * 4),
             nn.GELU(),
-            nn.Linear(cond_dim * 2, cond_dim),
+            nn.Linear(cond_dim * 4, cond_dim),
+        )
+        # 观测嵌入
+        self.obs_proj = nn.Sequential(
+            nn.Linear(obs_dim, cond_dim * 4),
+            nn.GELU(),
+            nn.Linear(cond_dim * 4, cond_dim),
         )
         
-        # 条件融合: concat time + obs, 然后投影
-        self.cond_fuse = nn.Sequential(
-            nn.Linear(cond_dim * 2, cond_dim),
-            nn.GELU(),
-        )
+        # obs 缩放因子：初始化为 2.0，确保 condition 有足够影响
+        self.obs_scale = nn.Parameter(torch.tensor(2.0))
 
         self.in_proj = nn.Conv1d(act_dim, base_channels, kernel_size=3, padding=1)
         self.down1 = Down1D(base_channels, cond_dim)
@@ -144,11 +155,11 @@ class UNet1D(nn.Module):
         t_emb = sinusoidal_embedding(timesteps, self.time_dim)
         t_cond = self.time_embed(t_emb)  # (B, cond_dim)
         
-        # 观测嵌入
-        g_cond = self.obs_proj(global_cond)  # (B, cond_dim)
+        # 观测嵌入（带缩放）
+        g_cond = self.obs_proj(global_cond) * self.obs_scale  # (B, cond_dim)
         
-        # 条件融合: concat 然后投影 (避免简单相加导致信息丢失)
-        cond = self.cond_fuse(torch.cat([t_cond, g_cond], dim=-1))  # (B, cond_dim)
+        # 条件融合: 直接相加
+        cond = t_cond + g_cond  # (B, cond_dim)
 
         h = self.in_proj(x)
         h, s1 = self.down1(h, cond)
