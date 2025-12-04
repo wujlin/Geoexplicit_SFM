@@ -244,6 +244,10 @@ class DDIMScheduler(DDPMScheduler):
     """
     Denoising Diffusion Implicit Models (DDIM) 调度器
     可以使用更少的步数进行采样
+    
+    支持 Classifier-Free Guidance (CFG):
+    - 训练时随机丢弃 condition (在 train.py 中实现)
+    - 推理时使用 guidance_scale 增强 condition 影响
     """
     
     def __init__(
@@ -363,6 +367,75 @@ class DDIMScheduler(DDPMScheduler):
             sample = self.step(
                 model_output, t_batch, sample, 
                 prev_timestep=prev_t_batch, 
+                generator=generator
+            )
+        
+        return sample
+
+    @torch.no_grad()
+    def sample_cfg(
+        self,
+        model: nn.Module,
+        shape: tuple,
+        condition: torch.Tensor,
+        device: torch.device,
+        guidance_scale: float = 3.0,
+        generator: Optional[torch.Generator] = None,
+    ) -> torch.Tensor:
+        """
+        Classifier-Free Guidance (CFG) 采样
+        
+        CFG 公式:
+        eps_guided = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
+                   = (1 - guidance_scale) * eps_uncond + guidance_scale * eps_cond
+        
+        Args:
+            model: 去噪模型
+            shape: 目标形状 (B, T, D)
+            condition: 条件输入 (B, cond_dim)
+            device: 设备
+            guidance_scale: CFG 强度 (1.0=无增强, 3.0=中等, 7.5=强)
+            generator: 随机数生成器
+        
+        Returns:
+            samples: (B, T, D) 生成的样本
+        """
+        batch_size = shape[0]
+        
+        # 初始噪声
+        sample = torch.randn(shape, device=device, dtype=torch.float32, generator=generator)
+        
+        # 无条件 condition (全零)
+        uncond = torch.zeros_like(condition)
+        
+        timesteps = self.timesteps.to(device)
+        
+        for i, t in enumerate(timesteps):
+            t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
+            
+            # 获取上一个时间步
+            if i + 1 < len(timesteps):
+                prev_t = timesteps[i + 1]
+            else:
+                prev_t = torch.tensor(0)
+            prev_t_batch = torch.full((batch_size,), prev_t, device=device, dtype=torch.long)
+            
+            # 准备输入
+            sample_input = sample.permute(0, 2, 1)  # (B, T, D) -> (B, D, T)
+            
+            # 无条件预测
+            eps_uncond = model(sample_input, t_batch, uncond)
+            # 有条件预测
+            eps_cond = model(sample_input, t_batch, condition)
+            
+            # CFG 公式
+            model_output = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
+            model_output = model_output.permute(0, 2, 1)  # (B, D, T) -> (B, T, D)
+            
+            # 去噪
+            sample = self.step(
+                model_output, t_batch, sample,
+                prev_timestep=prev_t_batch,
                 generator=generator
             )
         

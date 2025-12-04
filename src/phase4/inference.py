@@ -54,7 +54,12 @@ logger = logging.getLogger(__name__)
 
 
 class DiffusionPolicyInference:
-    """Diffusion Policy 推理器"""
+    """Diffusion Policy 推理器
+    
+    支持 Classifier-Free Guidance (CFG):
+    - guidance_scale > 1.0 时启用 CFG
+    - 推荐值: 2.0 ~ 5.0
+    """
     
     def __init__(
         self,
@@ -62,6 +67,7 @@ class DiffusionPolicyInference:
         device: str = "auto",
         use_ddim: bool = True,
         ddim_steps: int = 20,
+        guidance_scale: float = 1.0,  # CFG: 1.0=无增强, >1.0=启用 CFG
     ):
         # 设备
         if device == "auto":
@@ -70,6 +76,11 @@ class DiffusionPolicyInference:
             self.device = torch.device(device)
         
         logger.info(f"Using device: {self.device}")
+        
+        # CFG 配置
+        self.guidance_scale = guidance_scale
+        if guidance_scale > 1.0:
+            logger.info(f"CFG enabled with guidance_scale={guidance_scale}")
         
         # 加载检查点
         self.checkpoint_path = Path(checkpoint_path)
@@ -171,12 +182,22 @@ class DiffusionPolicyInference:
         # 采样
         shape = (num_samples, self.config["future"], self.config["act_dim"])
         
-        samples = self.scheduler.sample(
-            model=self.model,
-            shape=shape,
-            condition=obs,
-            device=self.device,
-        )
+        # 根据 guidance_scale 选择采样方法
+        if self.guidance_scale > 1.0 and hasattr(self.scheduler, 'sample_cfg'):
+            samples = self.scheduler.sample_cfg(
+                model=self.model,
+                shape=shape,
+                condition=obs,
+                device=self.device,
+                guidance_scale=self.guidance_scale,
+            )
+        else:
+            samples = self.scheduler.sample(
+                model=self.model,
+                shape=shape,
+                condition=obs,
+                device=self.device,
+            )
         
         # 反归一化
         samples = self.action_normalizer.inverse_transform(samples)
@@ -352,6 +373,7 @@ def main():
     parser.add_argument("--ddim_steps", type=int, default=10, help="DDIM steps (fewer = faster)")
     parser.add_argument("--action_horizon", type=int, default=4, help="Steps to execute per prediction")
     parser.add_argument("--nav_weight", type=float, default=0.0, help="Navigation field weight (0=pure model, 1=pure nav) - set 0 for new model")
+    parser.add_argument("--guidance_scale", type=float, default=1.0, help="CFG guidance scale (1.0=no CFG, 2.0-5.0=recommended)")
     parser.add_argument("--output", type=str, default=None, help="Output image path")
     
     args = parser.parse_args()
@@ -395,6 +417,7 @@ def main():
         checkpoint_path=args.checkpoint,
         use_ddim=args.use_ddim,
         ddim_steps=args.ddim_steps,
+        guidance_scale=args.guidance_scale,
     )
     
     # 随机选择起始点（优先选择离 sink 较远的点）

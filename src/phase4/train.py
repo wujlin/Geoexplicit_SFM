@@ -86,7 +86,12 @@ class EMA:
 
 
 class DiffusionPolicyTrainer:
-    """Diffusion Policy 训练器"""
+    """Diffusion Policy 训练器
+    
+    支持 Classifier-Free Guidance (CFG) 训练：
+    - cfg_dropout_prob: 训练时随机丢弃 condition 的概率（推荐 0.1）
+    - 推理时使用 guidance_scale 增强 condition 影响
+    """
     
     def __init__(
         self,
@@ -107,6 +112,7 @@ class DiffusionPolicyTrainer:
         num_epochs: int = 50,     # 30 -> 50，更多训练
         ema_decay: float = 0.9999,
         max_samples_per_epoch: int = 2_000_000,  # 每 epoch 采样 200万
+        cfg_dropout_prob: float = 0.1,  # CFG: 训练时丢弃 condition 的概率
         # 其他
         device: str = "auto",
         checkpoint_dir: str | Path = None,
@@ -137,6 +143,7 @@ class DiffusionPolicyTrainer:
         self.num_epochs = num_epochs
         self.ema_decay = ema_decay
         self.max_samples_per_epoch = max_samples_per_epoch
+        self.cfg_dropout_prob = cfg_dropout_prob  # CFG dropout
         
         # 检查点目录
         self.checkpoint_dir = Path(checkpoint_dir or PROJECT_ROOT / "data" / "output" / "phase4_checkpoints")
@@ -330,7 +337,7 @@ class DiffusionPolicyTrainer:
         )
     
     def train_step(self, batch: dict) -> float:
-        """单步训练"""
+        """单步训练 (支持 CFG)"""
         self.model.train()
         
         # 获取数据
@@ -344,7 +351,14 @@ class DiffusionPolicyTrainer:
         action = self.action_normalizer.transform(action)
         
         # 将 obs 展平作为条件
-        global_cond = obs.reshape(B, -1)  # (B, history * 4)
+        global_cond = obs.reshape(B, -1)  # (B, history * 6)
+        
+        # CFG: 随机丢弃 condition
+        if self.cfg_dropout_prob > 0:
+            # 为每个样本独立决定是否丢弃 condition
+            dropout_mask = torch.rand(B, device=self.device) < self.cfg_dropout_prob
+            # 将被选中的样本的 condition 置零
+            global_cond = global_cond * (~dropout_mask).unsqueeze(-1).float()
         
         # 采样噪声和时间步
         noise = torch.randn_like(action)
@@ -426,6 +440,7 @@ class DiffusionPolicyTrainer:
                 "cond_dim": self.cond_dim,
                 "time_dim": self.time_dim,
                 "num_diffusion_steps": self.scheduler.num_diffusion_steps,
+                "cfg_dropout_prob": self.cfg_dropout_prob,  # 保存 CFG 配置
             }
         }
         
@@ -542,6 +557,7 @@ def main():
     parser.add_argument("--max_samples", type=int, default=2_000_000, help="Max samples per epoch")
     parser.add_argument("--base_channels", type=int, default=128, help="UNet base channels")
     parser.add_argument("--cond_dim", type=int, default=64, help="Condition embedding dim")
+    parser.add_argument("--cfg_dropout", type=float, default=0.1, help="CFG condition dropout probability")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cuda/cpu)")
     parser.add_argument("--valid_indices", type=str, default=None, 
                         help="Path to precomputed valid indices (.npy). If not specified, will look for data/output/valid_indices.npy")
@@ -559,6 +575,7 @@ def main():
         learning_rate=args.lr,
         num_epochs=args.epochs,
         max_samples_per_epoch=args.max_samples,
+        cfg_dropout_prob=args.cfg_dropout,
         device=args.device,
     )
     
