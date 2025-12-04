@@ -28,7 +28,7 @@ class DDPMScheduler:
         beta_end: float = 0.02,
         beta_schedule: str = "linear",
         clip_sample: bool = True,
-        clip_sample_range: float = 1.0,
+        clip_sample_range: float = 5.0,  # 增大到 5.0，因为归一化后数据范围约 [-3, 3]
     ):
         self.num_diffusion_steps = num_diffusion_steps
         self.beta_start = beta_start
@@ -259,7 +259,7 @@ class DDIMScheduler(DDPMScheduler):
         beta_schedule: str = "linear",
         eta: float = 0.0,  # eta=0 时是确定性采样
         clip_sample: bool = True,
-        clip_sample_range: float = 1.0,
+        clip_sample_range: float = 5.0,  # 增大到 5.0，因为归一化后数据范围约 [-3, 3]
     ):
         super().__init__(
             num_diffusion_steps=num_diffusion_steps,

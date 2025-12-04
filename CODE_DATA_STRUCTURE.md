@@ -497,36 +497,36 @@ for t in range(10, 1000):
    - 预测的噪声 std ≈ 0.7-0.8 (合理范围)
    - 训练 loss 稳定下降到 0.30
 
-4. **根本原因分析**
-   - 扩散模型学会了预测"平均噪声"，忽略 condition
-   - 这是条件扩散模型训练的经典问题
-   - 训练数据分布没问题 (静止样本仅 0.1%，方向分布均匀)
+4. **根本原因分析 (2025-12-04 确认)**
+   - ~~扩散模型学会了预测"平均噪声"，忽略 condition~~
+   - **真正原因: ResBlock1D 的 condition 注入使用简单加法 `h = h + cond_proj(cond)`**
+   - 简单加法太弱，模型学会忽略 condition (因为这样梯度更小)
+   - CFG 训练虽然正确实现，但因为注入方式太弱，无法生效
 
-**推荐解决方案:**
+**已实施的解决方案 (v2):**
 
-1. **Classifier-Free Guidance (CFG)** - 最推荐
-   ```python
-   # 训练时随机丢弃 condition (如 10% 概率)
-   if random.random() < 0.1:
-       condition = torch.zeros_like(condition)  # 无条件
-   
-   # 推理时使用 CFG 公式增强 condition 影响
-   eps_uncond = model(x, t, zeros_condition)
-   eps_cond = model(x, t, real_condition)
-   eps_guided = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
-   # guidance_scale 通常 2.0 ~ 7.5
-   ```
+使用 **FiLM (Feature-wise Linear Modulation)** 替代简单加法:
 
-2. **增大 condition embedding** (简单尝试)
-   - 当前 cond_dim=64 可能太小
-   - 尝试 cond_dim=128 或 256
+```python
+# 之前 (错误): 简单加法
+h = h + self.cond_proj(cond).unsqueeze(-1)
 
-3. **FiLM 条件注入** (架构改进)
-   ```python
-   # Feature-wise Linear Modulation
-   gamma, beta = cond_proj(condition)  # (B, C)
-   h = gamma.unsqueeze(-1) * h + beta.unsqueeze(-1)  # 乘法 + 加法
-   ```
+# 现在 (正确): FiLM
+film_params = self.cond_proj(cond)  # 输出 gamma + beta
+gamma, beta = film_params.chunk(2, dim=-1)
+h = gamma * h + beta  # 乘法 + 加法，condition 无法被忽略
+```
+
+**为什么 FiLM 更好:**
+- 如果 gamma=0，所有特征都会被杀死 → 模型被迫学习有意义的 gamma
+- 乘法比加法更强，condition 信息更难被忽略
+- 这是 conditional diffusion 的标准做法 (StyleGAN, DDPM, etc.)
+
+**训练建议:**
+```bash
+# 使用 FiLM 重新训练
+python src/phase4/train.py --cfg_dropout 0.15  # 可适当增大 dropout
+```
 
 ### 9.3 cos_sim 评估指标
 
@@ -542,4 +542,74 @@ cos_sim = np.dot(pred, gt) / (np.linalg.norm(pred) * np.linalg.norm(gt))
 # - 好的模型: cos_sim > 0.6
 # - 优秀模型: cos_sim > 0.8
 ```
+
+### 9.4 DDIM clip_sample_range 问题 (2025-12-04 发现)
+
+**问题**：
+- 默认 `clip_sample_range=1.0`
+- 但归一化后数据范围是 `[-3, 3]`，64% 的数据超出 `[-1, 1]`
+- 导致推理时预测被截断
+
+**解决**：
+- 已修改 `scheduler.py` 中 `clip_sample_range` 从 1.0 改为 5.0
+
+---
+
+## 10. 诊断记录 (避免重复思考)
+
+### 10.1 数据质量验证 (已确认 OK)
+
+| 检查项 | 结果 | 说明 |
+|-------|------|-----|
+| nav 与 GT action 的 cos_sim | 0.67~0.82 | 数据本身是好的 |
+| obs velocity 与 action 的连续性 | 0.71 | 时序一致性好 |
+| 静止样本比例 | 0.11% | 可忽略 |
+| 归一化后数据分布 | mean≈0, std≈1 | 正确 |
+
+**结论**：数据没问题，问题在模型训练。
+
+### 10.2 模型问题诊断 (已确认)
+
+**现象**：
+- 模型输出几乎是常数 `[~1.7, ~-0.7]`（归一化空间）
+- 不同 condition 的输出差异极小（std < 0.01）
+- cos_sim(pred, GT) ≈ 0（随机水平）
+
+**根因分析**：
+
+1. **condition 影响被忽略**
+   - 测试：相同 x_t + 不同 condition → 差异 0.032
+   - 测试：不同 x_t + 相同 condition → 差异 0.207
+   - 比值 0.15，说明模型主要依赖 x_t
+
+2. **加法注入太弱**
+   - `h = h + cond_proj(cond)` 容易被后续层"平均掉"
+   - 训练时梯度会倾向于忽略 condition
+
+3. **CFG 训练无效**
+   - 虽然实现了 10% dropout
+   - 但因为注入方式太弱，模型本身就不依赖 condition
+
+### 10.3 已实施的修复
+
+| 修复项 | 文件 | 内容 |
+|-------|------|-----|
+| clip_sample_range | `scheduler.py` | 1.0 → 5.0 |
+| FiLM 注入 | `unet1d.py` | `h = gamma * h + beta` |
+
+### 10.4 FiLM vs 加法注入对比
+
+| 指标 | 加法注入（训练后） | FiLM（随机初始化） |
+|-----|------------------|------------------|
+| condition 差异 | 0.032 | 0.108 |
+| input 差异 | 0.207 | 0.138 |
+| 比值 | 0.15 | **0.78** |
+
+**结论**：FiLM 显著提升 condition 影响力，需要重新训练验证。
+
+### 10.5 待验证事项
+
+- [ ] FiLM 模型训练后 cos_sim 是否提升
+- [ ] 最优 cfg_dropout 比例（当前 0.1，可尝试 0.15~0.2）
+- [ ] 最优 guidance_scale（推理时）
 

@@ -30,20 +30,34 @@ def sinusoidal_embedding(timesteps: torch.Tensor, dim: int) -> torch.Tensor:
 
 
 class ResBlock1D(nn.Module):
+    """
+    ResBlock with FiLM (Feature-wise Linear Modulation) conditioning.
+    
+    FiLM: h = gamma * h + beta (乘法 + 加法，比纯加法更强)
+    这使得 condition 无法被忽略，因为 gamma=0 会杀死所有特征。
+    """
     def __init__(self, in_ch, out_ch, cond_ch):
         super().__init__()
         self.conv1 = nn.Conv1d(in_ch, out_ch, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(out_ch, out_ch, kernel_size=3, padding=1)
         self.norm1 = nn.GroupNorm(8, out_ch)
         self.norm2 = nn.GroupNorm(8, out_ch)
-        self.cond_proj = nn.Linear(cond_ch, out_ch)
+        # FiLM: 输出 gamma 和 beta
+        self.cond_proj = nn.Linear(cond_ch, out_ch * 2)  # gamma + beta
         self.skip = nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x, cond):
         # x: (B, C, T), cond: (B, cond_ch)
         h = self.conv1(x)
         h = self.norm1(h)
-        h = h + self.cond_proj(cond).unsqueeze(-1)
+        
+        # FiLM modulation
+        film_params = self.cond_proj(cond)  # (B, out_ch * 2)
+        gamma, beta = film_params.chunk(2, dim=-1)  # 各 (B, out_ch)
+        gamma = gamma.unsqueeze(-1)  # (B, out_ch, 1)
+        beta = beta.unsqueeze(-1)    # (B, out_ch, 1)
+        h = gamma * h + beta  # FiLM: 乘法 + 加法
+        
         h = F.relu(h)
         h = self.conv2(h)
         h = self.norm2(h)
@@ -83,7 +97,8 @@ class UNet1D(nn.Module):
     
     改进点:
     1. 增大默认通道数 64 -> 128
-    2. 条件注入使用 concat 而非 add，避免信息丢失
+    2. 条件注入使用 FiLM (Feature-wise Linear Modulation)
+       FiLM: h = gamma * h + beta，比纯加法更强，condition 无法被忽略
     3. 增加 cond_dim 以容纳更多条件信息
     """
     def __init__(self, obs_dim: int = 12, act_dim: int = 2, base_channels: int = 128, 
