@@ -983,6 +983,74 @@ python scripts/compare_phase3_phase4_fair.py --n_samples 100 --guidance 3.0
 **输出**:
 - `data/output/phase4_validation/phase3_vs_phase4_fair_comparison.png`
 
+### 10.18 公平对比结果分析 (2025-12-05)
+
+**实验设置**：
+- 100 个筛选样本（起点距离 > 50 px）
+- 相同起点、相同目标 sink
+- Phase 4 使用 CFG=3.0
+- 最大 300 步
+
+**结果**：
+| 指标 | Phase 3 | Phase 4 |
+|------|---------|---------|
+| 起点距离 | 401.6 | 401.6 |
+| 终点距离 | 157.3 ± 227.0 | 339.3 ± 269.6 |
+| **距离变化** | **-244.4** | -62.3 |
+| 靠近率 | 100% | 99% |
+| **到达率** | **44%** | 1% |
+| 速度 | 1.13 | 0.92 |
+| 平滑度 | 26°/step | 60°/step |
+
+**效率分析**：
+| 指标 | Phase 3 | Phase 4 |
+|------|---------|---------|
+| 总路程 | 339 px | 276 px |
+| 有效前进 | 244 px | 62 px |
+| **效率** | **72%** | **22.5%** |
+
+**问题诊断**：
+Phase 4 虽然 99% 在靠近目标，但效率极低（22.5%），77.5% 的移动是无效的：
+1. 方向抖动大（60°/step vs 26°/step）
+2. 速度偏慢（0.92 vs 1.13）
+3. 可能在目标附近震荡
+
+**结论**：
+- Phase 4 学到了"方向大致正确"（99% approaching）
+- 但没有学到"高效前进"（只有 22.5% 效率）
+- 当前 Phase 4 **显著弱于 Phase 3**
+
+### 10.19 推理代码 Bug：vel_hist 记录错误 (2025-12-05 发现)
+
+**问题**：
+推理代码中 `vel_hist` 记录的是**预测的 action**，而非**实际位移**。
+
+当道路约束阻止移动时：
+- 位置不变 (`pos` 不更新)
+- 但 `vel_hist.append(vel)` 记录了预测的 action
+- 下一次推理时，obs 中 pos 和 vel 不一致
+
+**影响**：
+- 训练数据中 `vel = pos[t+1] - pos[t]`，位置相同时 vel = 0
+- 推理时 vel 可能非零但位置相同
+- 导致 obs 分布偏离训练分布，模型行为异常
+
+**修复**：
+```python
+# 之前（错误）：
+vel_hist.append(vel.copy())  # vel = actions[j]
+
+# 修复后：
+old_pos = pos.copy()
+# ... 更新 pos ...
+actual_vel = pos - old_pos  # 实际位移
+vel_hist.append(actual_vel)
+```
+
+**修复文件**：
+- `scripts/compare_phase3_phase4_fair.py`
+- `scripts/analyze_phase4_jitter.py`
+
 ---
 
 *最后更新: 2025-12-05*

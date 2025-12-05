@@ -143,6 +143,7 @@ def simulate_phase4_with_destination(data, model, obs_norm, act_norm, scheduler,
         
         # 执行 4 步
         for j in range(min(4, max_steps - step)):
+            old_pos = pos.copy()
             vel = actions[j]
             new_pos = pos + vel
             new_pos = np.clip(new_pos, [0, 0], [H-1, W-1])
@@ -152,9 +153,11 @@ def simulate_phase4_with_destination(data, model, obs_norm, act_norm, scheduler,
             if mask[iy, ix]:
                 pos = new_pos
             
+            # 关键修复：vel_hist 记录实际位移，而非预测的 action
+            actual_vel = pos - old_pos
             nav = get_nav(pos)
             pos_hist.append(pos.copy())
-            vel_hist.append(vel.copy())
+            vel_hist.append(actual_vel)  # 修复：使用实际位移
             nav_hist.append(nav)
             traj.append(pos.copy())
     
