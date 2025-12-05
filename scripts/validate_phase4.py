@@ -56,8 +56,9 @@ UNet1D = unet_module.UNet1D
 class Phase4Validator:
     """Phase 4 模型验证器"""
     
-    def __init__(self, checkpoint_path: Path, device: str = "auto"):
+    def __init__(self, checkpoint_path: Path, device: str = "auto", guidance_scale: float = 1.0):
         self.checkpoint_path = checkpoint_path
+        self.guidance_scale = guidance_scale  # CFG guidance scale
         
         if device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -218,14 +219,23 @@ class Phase4Validator:
         # Flatten obs: (B, history, 6) -> (B, history * 6)
         obs_flat = obs_batch.reshape(B, -1)
         
-        # 采样
+        # 采样（支持 CFG）
         shape = (B, self.config["future"], self.config["act_dim"])
-        samples = self.scheduler.sample(
-            model=self.model,
-            shape=shape,
-            condition=obs_flat,
-            device=self.device,
-        )
+        if self.guidance_scale > 1.0 and hasattr(self.scheduler, 'sample_cfg'):
+            samples = self.scheduler.sample_cfg(
+                model=self.model,
+                shape=shape,
+                condition=obs_flat,
+                device=self.device,
+                guidance_scale=self.guidance_scale,
+            )
+        else:
+            samples = self.scheduler.sample(
+                model=self.model,
+                shape=shape,
+                condition=obs_flat,
+                device=self.device,
+            )
         
         # 反归一化
         samples = self.action_normalizer.inverse_transform(samples)
@@ -656,6 +666,7 @@ def main():
     parser.add_argument("--quick", action="store_true", help="Quick mode with fewer samples")
     parser.add_argument("--output", type=str, default=None, help="Output directory")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cuda/cpu)")
+    parser.add_argument("--guidance", type=float, default=1.0, help="CFG guidance scale (1.0=no CFG, 3.0 recommended)")
     
     args = parser.parse_args()
     
@@ -689,7 +700,9 @@ def main():
     # 运行验证
     start_time = time.time()
     
-    validator = Phase4Validator(args.checkpoint, device=args.device)
+    validator = Phase4Validator(args.checkpoint, device=args.device, guidance_scale=args.guidance)
+    if args.guidance > 1.0:
+        print(f"\n使用 CFG 推理, guidance_scale={args.guidance}")
     validator.evaluate_prediction_quality(num_samples=num_pred_samples)
     validator.evaluate_condition_response(num_tests=num_cond_tests)
     validator.evaluate_trajectory_quality(num_agents=num_traj_agents, max_steps=max_traj_steps)
