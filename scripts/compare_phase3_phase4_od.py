@@ -204,14 +204,49 @@ def analyze_trajectories(trajectories, data, name):
 
 
 def extract_phase3_trajectories(data, agent_indices, max_steps=300):
-    """提取 Phase 3 对应 agent 的轨迹"""
+    """
+    提取 Phase 3 对应 agent 的轨迹
+    
+    改进：找到每个 agent 从远处出发的轨迹段（respawn 后到下一次 respawn 前）
+    """
     phase3_pos = data['phase3_pos']  # (T, N, 2)
-    T = min(max_steps, phase3_pos.shape[0])
+    phase3_dest = data['phase3_dest']  # (T, N)
+    dist_field = data['dist_field']
+    H, W = dist_field.shape
+    T_total = phase3_pos.shape[0]
     
     trajectories = []
     for agent in agent_indices:
-        traj = phase3_pos[:T, agent, :]
-        trajectories.append(traj)
+        # 找到这个 agent 的所有 respawn 点（目的地变化的时刻）
+        dest_seq = phase3_dest[:, agent]
+        respawn_times = np.where(np.diff(dest_seq) != 0)[0] + 1  # respawn 发生的时刻
+        
+        # 添加起点和终点
+        segment_starts = np.concatenate([[0], respawn_times])
+        segment_ends = np.concatenate([respawn_times, [T_total]])
+        
+        # 找到一个从远处出发的段（起点距离 > 30）
+        best_traj = None
+        best_start_dist = 0
+        
+        for start, end in zip(segment_starts, segment_ends):
+            if end - start < 50:  # 太短的段跳过
+                continue
+            
+            y0 = int(np.clip(phase3_pos[start, agent, 0], 0, H-1))
+            x0 = int(np.clip(phase3_pos[start, agent, 1], 0, W-1))
+            start_dist = dist_field[y0, x0]
+            
+            if start_dist > best_start_dist:
+                best_start_dist = start_dist
+                seg_len = min(end - start, max_steps)
+                best_traj = phase3_pos[start:start+seg_len, agent, :]
+        
+        # 如果没找到好的段，用原始方式
+        if best_traj is None:
+            best_traj = phase3_pos[:max_steps, agent, :]
+        
+        trajectories.append(best_traj)
     
     return trajectories
 

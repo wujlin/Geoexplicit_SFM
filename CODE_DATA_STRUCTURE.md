@@ -75,7 +75,7 @@ vel[t+1] = pos[t+1] - pos[t]  # 从 pos[t] 到 pos[t+1] 的位移
 - `vel[t] == pos[t+1] - pos[t]`: 只有 0.9% 一致 ❌
 - `vel[t+1] == pos[t+1] - pos[t]`: **99.7% 一致** ✅
 
-### 2.2 导航场 `data/processed/nav_fields/`
+### 2.2 导航场 `data/processed/nav_fields/` ⚠️ 重要
 
 ```
 目录结构:
@@ -86,22 +86,37 @@ nav_fields/
 └── ...
 
 单个 .npz 文件内容:
-├── nav_y: (H, W) float32     # y 方向分量
-└── nav_x: (H, W) float32     # x 方向分量
+├── nav_y: (H, W) float32         # y 方向分量
+├── nav_x: (H, W) float32         # x 方向分量
+└── distance_field: (H, W) float32  # ⚠️ 到该 sink 的距离场
 
 加载后组合为: (2, H, W) 格式，即 [nav_y, nav_x]
 ```
 
+**⚠️ 关键区分（不要混淆）**：
+
+| 文件 | 含义 | 用途 |
+|------|------|------|
+| `distance_field.npy` | 到**最近** sink 的距离 | 全局可达性分析 |
+| `nav_field_XXX.npz['distance_field']` | 到**指定** sink XXX 的距离 | Phase 3 评估、目标导航 |
+
+**Phase 3 仿真逻辑**：
+- 每个 agent 有明确的 `destination` (目标 sink ID)
+- 使用 `nav_field_{destination}.npz` 中的导航场和距离场
+- 评估时必须用到**目标 sink** 的距离，而非最近 sink
+
 **加载代码**：
 ```python
 def load_nav_fields(nav_fields_dir):
-    """加载所有个体导航场"""
+    """加载所有个体导航场（含距离场）"""
     nav_fields = {}
+    dist_fields = {}
     index = json.load(open(nav_fields_dir / "nav_fields_index.json"))
     for sink_id in index["sink_ids"]:
         data = np.load(nav_fields_dir / f"nav_field_{sink_id:03d}.npz")
         nav_fields[sink_id] = np.stack([data["nav_y"], data["nav_x"]], axis=0)  # (2, H, W)
-    return nav_fields
+        dist_fields[sink_id] = data["distance_field"]  # (H, W)
+    return nav_fields, dist_fields
 ```
 
 ### 2.3 全局导航场 `data/processed/nav_baseline.npz`
@@ -435,6 +450,27 @@ nav_normalizer = IdentityNormalizer(scale=2.0)  # 仅缩放到 [-2, 2]
 - [ ] 导航场 stack 顺序是否是 `[nav_y, nav_x]`？
 - [ ] Conv1D 输入是否需要 permute？
 - [ ] 归一化器是否正确加载？
+- [ ] **距离场用对了吗？**（见下）
+
+### ⚠️ 距离场使用检查（易错点）
+
+```python
+# ❌ 错误：使用全局距离场评估"到目标 sink 的距离"
+dist_field = np.load('data/processed/distance_field.npy')  # 到最近 sink
+dist_to_target = dist_field[y, x]  # 这是到最近 sink，不是到目标 sink！
+
+# ✅ 正确：使用目标 sink 的独立距离场
+target_sink = dest[t, agent]
+sink_dist = np.load(f'data/processed/nav_fields/nav_field_{target_sink:03d}.npz')['distance_field']
+dist_to_target = sink_dist[y, x]  # 这才是到目标 sink 的距离
+```
+
+**何时用哪个？**
+| 场景 | 用哪个距离场 |
+|------|-------------|
+| 检查是否在任意 sink 附近 | `distance_field.npy` |
+| 评估 Phase 3 轨迹质量 | `nav_field_XXX.npz['distance_field']` |
+| 计算到特定目的地的距离 | `nav_field_XXX.npz['distance_field']` |
 
 ### 数据一致性检查：
 
@@ -451,7 +487,7 @@ assert obs.shape == (history, 6)  # [pos(2) + vel(2) + nav(2)]
 
 ---
 
-*最后更新: 2025-12-04*
+*最后更新: 2025-12-05*
 
 ---
 
@@ -790,39 +826,163 @@ samples = scheduler.sample_cfg(
 3. ✅ 98% 靠近率说明闭环仿真表现良好
 4. ⚠️ 推理速度会变慢约 2x (因为 CFG 需要 2 次前向)
 
-### 10.12 架构迭代反思 (2025-12-05)
+### 10.12 模型版本演进汇总 (2025-12-05)
 
-**时间线回顾**：
+| 版本 | 日期 | 架构 | 关键改动 | 效果 |
+|------|------|------|----------|------|
+| **v1** | 12月初 | 简单加法 | `h = h + cond_proj(cond)` | cos_sim ≈ 0，condition 被忽略 |
+| **v2** | 12/3 | FiLM | `h = gamma * h + beta`，gamma/beta 标准初始化 | 更差，gamma→0 特征被杀死 |
+| **v3** | 12/4 | AdaLN | gamma bias=1, obs_scale=2.0 | cos_sim=0.26 (无CFG) |
+| **v3+CFG** | 12/5 | AdaLN + CFG推理 | guidance_scale=3.0 | **cos_sim=0.54, 到达率98%** |
 
-| 版本 | 架构 | 问题 | 结果 |
-|------|------|------|------|
-| v1 | 简单加法 `h = h + cond` | condition 被忽略 | cos_sim ≈ 0 |
-| v2 | FiLM `h = gamma*h + beta` | gamma→0，特征被杀死 | 更差 |
-| v3 | AdaLN (gamma bias=1) + obs_scale | 无 CFG 仍然弱 | cos_sim=0.26 |
-| v3+CFG | 同上 + CFG 推理 | - | **cos_sim=0.54** |
+**当前最佳: v3 + CFG (best.pt, Epoch 86)**
 
-**核心问题**：
+**各版本详细对比**：
 
-1. **架构改进没有根本解决 condition 敏感性问题**
-   - v1→v2→v3 的架构迭代，训练后效果提升有限
-   - cos_sim 从 ~0 提升到 0.26，仍然不理想
+| 指标 | v1 | v2 (FiLM) | v3 (AdaLN) | v3+CFG |
+|------|-----|-----------|------------|--------|
+| Pred vs GT cos_sim | ~0 | ~0 | 0.26 | **0.54** |
+| 条件响应方差 | 0.002 | <0.002 | 0.002 | **0.094** |
+| 靠近 Sink 率 | - | - | 76% | **98%** |
+| Loss | ~0.30 | ~0.30 | 0.28 | 0.28 |
 
-2. **CFG 是关键**
-   - CFG 将 cos_sim 从 0.26 提升到 0.54 (+109%)
-   - 说明模型学到了 condition 信息，但权重不够
-   - CFG 本质是放大 condition 的影响
+**关键教训**：
+1. 架构改动 (v1→v2→v3) 效果有限
+2. **CFG 是关键**：同一模型，CFG 使效果翻倍
+3. FiLM 失败是因为初始化问题，不是架构本身
 
-3. **教训**
-   - 不应频繁改动架构，而应先充分诊断
-   - FiLM/AdaLN 等技术需要配合正确的初始化和训练策略
-   - CFG 是 conditional diffusion 的标准做法，应该从一开始就采用
+**当前模型文件**：
+- `best.pt`: AdaLN 架构, Epoch 86, Loss 0.28, obs_scale=1.77 (训练后)
+- 推理时必须用 `guidance_scale=3.0`
 
-**正确的迭代顺序应该是**：
-1. 先用标准架构 + CFG 训练
-2. 如果效果不好，再诊断是数据问题还是架构问题
-3. 针对性改进，而不是盲目尝试新架构
+### 10.13 Phase 3 vs Phase 4 对比注意事项 (2025-12-05)
+
+**问题**：直接比较 Phase 3 和 Phase 4 轨迹会有偏差
+
+**原因**：
+- Phase 3 轨迹包含多次 respawn（agent 到达 sink 后重新出生）
+- 很多 agent 的起点就在 sink 附近 (dist=0)
+- 导致 `distance_change` 为正（respawn 到远处）
+
+**解决方案**：
+对 Phase 3 轨迹，提取**单次 trip**（从 respawn 到下一次 respawn）：
+```python
+# 找到 respawn 点
+respawn_times = np.where(np.diff(dest_seq) != 0)[0] + 1
+# 选择起点距离远的段
+for start, end in zip(segment_starts, segment_ends):
+    start_dist = dist_field[pos[start]]
+    if start_dist > threshold:
+        use this segment
+```
+
+### 10.14 Phase 4 超越 Phase 3 的路径分析 (2025-12-05)
+
+**核心问题**：Phase 4 学习 Phase 3 数据，上限被 Phase 3 限制
+
+**要超越，需要引入 Phase 3 没有的信息**：
+
+| 路径 | 方法 | 可行性 |
+|------|------|--------|
+| 路径 1 | 引入视觉先验 (CLIP) | 复杂，需要图像数据 |
+| **路径 2** | **OD Flow 作为额外监督** | ✅ 已有数据 |
+| 路径 3 | Energy-Based 直接学 OD 约束 | 理论可行 |
+| 路径 4 | Diffusion + RL 微调 | 需要设计 reward |
+
+**推荐方案：OD-Aware Diffusion Policy**
+
+现有 OD 数据分析：
+- `sink_od_prob.csv`: 35×35 的 OD 概率矩阵
+- 平均熵 2.88 < 最大熵 3.56 → **Destination 选择不是均匀分布**
+- 这是可以学习的真实知识！
+
+**具体实施思路**：
+```
+当前: Phase 4 只学 (obs, nav) → velocity
+改进: Phase 4 学 (obs, nav, destination_id) → velocity
+
+推理时:
+1. 根据 origin 位置确定 origin_sink
+2. 用真实 OD prob 采样 destination_sink  
+3. 生成去往该 destination 的轨迹
+```
+
+**泛化能力的关键**：
+- 不是学习特定轨迹，而是学习 **"如何根据目的地选择路径"**
+- OD 分布是真实数据，不是仿真假象
+- 模型需要学到：同一起点，不同目的地 → 不同的行为模式
+
+### 10.15 待实现改进
+
+- [ ] 给 Phase 4 模型增加 destination embedding 作为 condition
+- [ ] 用真实 OD prob 采样 destination（替代 Phase 3 的随机采样）
+- [ ] 设计评估指标：生成轨迹的 OD 分布与真实 OD 的 KL 散度
+
+### 10.16 Phase 3 评估方法错误 (2025-12-05 诊断)
+
+**问题现象**：
+之前的对比图显示 Phase 3 的 approaching rate = 0%，这显然不合理。
+
+**根本原因**：
+评估脚本使用了 `distance_field.npy`（到**最近** sink 的距离），而非到**目标** sink 的距离。
+
+**Phase 3 仿真机制回顾**：
+1. Agent 从 sink A 出发，目标是 sink B
+2. 在 A 点，到最近 sink 的距离 = 0（就是 A 本身）
+3. 移动过程中，距离先增大（离开 A），后减小（靠近 B）
+4. 但如果 A 和 B 距离近，全程距离都很小
+
+**正确评估方法**：
+使用每个 sink 的独立距离场 `nav_fields/nav_field_XXX.npz['distance_field']`
+
+```python
+# 正确：到目标 sink 的距离
+target_sink = dest[t, agent]
+dist_to_target = sink_dist_fields[target_sink][y, x]
+
+# 错误：到最近 sink 的距离
+dist_to_nearest = distance_field[y, x]  # 这是之前用的
+```
+
+**Phase 3 真实表现**（使用正确评估，100 个筛选样本，300 步）：
+| 指标 | 值 |
+|------|-----|
+| 起点到目标距离 | 401.6 px |
+| 终点到目标距离 | 157.3 ± 227.0 px |
+| **距离变化** | **-244.4 ± 81.2 px**（靠近） |
+| **靠近目标率** | **100%** |
+| **到达率** | **44%** |
+| 速度 | 1.13 ± 0.13 px/step |
+| 平滑度 | 25.9°/step |
+
+**筛选条件**：
+- 起点到目标距离 > 50 px
+- Trip 长度 >= 100 步
+
+**结论**：
+Phase 3 仿真本身是正确的，问题出在评估方法。
+
+### 10.17 公平对比评估脚本 (2025-12-05)
+
+**脚本**: `scripts/compare_phase3_phase4_fair.py`
+
+**关键修正**:
+1. Phase 4 推理时使用**目标 sink 的导航场**（而非全局 nav_baseline）
+2. 评估时使用**目标 sink 的距离场**
+3. 使用筛选后的有效样本（起点距离 > 50）
+
+**运行方式**:
+```bash
+# 先生成有效样本
+python scripts/filter_eval_samples.py
+
+# 再运行公平对比（需要 GPU）
+python scripts/compare_phase3_phase4_fair.py --n_samples 100 --guidance 3.0
+```
+
+**输出**:
+- `data/output/phase4_validation/phase3_vs_phase4_fair_comparison.png`
 
 ---
 
 *最后更新: 2025-12-05*
-
