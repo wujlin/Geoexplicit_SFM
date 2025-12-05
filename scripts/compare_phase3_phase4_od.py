@@ -27,6 +27,10 @@ def load_data():
     dist_field = np.load('data/processed/distance_field.npy')
     pixel_to_sink = np.load('data/processed/pixel_to_sink.npy')
     
+    # 如果 pixel_to_sink 是 1D，reshape 成 2D
+    if pixel_to_sink.ndim == 1:
+        pixel_to_sink = pixel_to_sink.reshape(mask.shape)
+    
     # Sink 数据
     sinks_df = pd.read_csv('data/processed/sinks_phase1.csv')
     
