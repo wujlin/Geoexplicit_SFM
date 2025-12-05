@@ -117,7 +117,7 @@ class TrajectorySlidingWindow(Dataset):
         self.nav_fields_dir = nav_fields_dir
         self.nav_field_ids = set(index["sink_ids"])
         self.nav_fields_cache: Dict[int, np.ndarray] = {}  # LRU 缓存
-        self.nav_cache_max_size = 8  # 最多缓存 8 个导航场（约 125 MB）
+        self.nav_cache_max_size = 35  # 缓存全部 35 个导航场（约 550 MB，但每个 worker 独立）
         
         self.has_individual_nav = True
         print(f"  Lazy loading enabled for {index['num_sinks']} navigation fields "
@@ -136,8 +136,9 @@ class TrajectorySlidingWindow(Dataset):
         if not path.exists():
             return None
         
-        data = np.load(path)
-        nav = np.stack([data["nav_y"], data["nav_x"]], axis=0)
+        # 重要：使用 with 语句确保文件正确关闭
+        with np.load(path) as data:
+            nav = np.stack([data["nav_y"], data["nav_x"]], axis=0).copy()
         
         # 简单 LRU：如果缓存满了，删除最早的
         if len(self.nav_fields_cache) >= self.nav_cache_max_size:

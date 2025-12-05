@@ -113,6 +113,7 @@ class DiffusionPolicyTrainer:
         ema_decay: float = 0.9999,
         max_samples_per_epoch: int = 2_000_000,  # 每 epoch 采样 200万
         cfg_dropout_prob: float = 0.1,  # CFG: 训练时丢弃 condition 的概率
+        num_workers: int = 8,  # DataLoader workers，根据内存调整
         # 其他
         device: str = "auto",
         checkpoint_dir: str | Path = None,
@@ -144,6 +145,7 @@ class DiffusionPolicyTrainer:
         self.ema_decay = ema_decay
         self.max_samples_per_epoch = max_samples_per_epoch
         self.cfg_dropout_prob = cfg_dropout_prob  # CFG dropout
+        self.num_workers = num_workers  # DataLoader workers
         
         # 检查点目录
         self.checkpoint_dir = Path(checkpoint_dir or PROJECT_ROOT / "data" / "output" / "phase4_checkpoints")
@@ -247,7 +249,8 @@ class DiffusionPolicyTrainer:
         
         # 根据平台选择 num_workers
         import platform
-        num_workers = 4 if platform.system() != "Windows" else 0
+        num_workers = self.num_workers if platform.system() != "Windows" else 0
+        logger.info(f"DataLoader num_workers={num_workers}")
         
         # 创建 DataLoader
         self.train_loader = DataLoader(
@@ -258,6 +261,7 @@ class DiffusionPolicyTrainer:
             pin_memory=True if self.device.type == "cuda" else False,
             drop_last=True,
             persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=4 if num_workers > 0 else None,
         )
         
         self.val_loader = DataLoader(
@@ -267,6 +271,7 @@ class DiffusionPolicyTrainer:
             num_workers=num_workers,
             pin_memory=True if self.device.type == "cuda" else False,
             persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=4 if num_workers > 0 else None,
         )
     
     def _compute_normalization(self, dataset, sample_size: int = 10000):
@@ -558,6 +563,7 @@ def main():
     parser.add_argument("--base_channels", type=int, default=128, help="UNet base channels")
     parser.add_argument("--cond_dim", type=int, default=64, help="Condition embedding dim")
     parser.add_argument("--cfg_dropout", type=float, default=0.1, help="CFG condition dropout probability")
+    parser.add_argument("--num_workers", type=int, default=8, help="DataLoader workers (increase if GPU idle)")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cuda/cpu)")
     parser.add_argument("--valid_indices", type=str, default=None, 
                         help="Path to precomputed valid indices (.npy). If not specified, will look for data/output/valid_indices.npy")
@@ -576,6 +582,7 @@ def main():
         num_epochs=args.epochs,
         max_samples_per_epoch=args.max_samples,
         cfg_dropout_prob=args.cfg_dropout,
+        num_workers=args.num_workers,
         device=args.device,
     )
     
