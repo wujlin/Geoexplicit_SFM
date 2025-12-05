@@ -1051,6 +1051,40 @@ vel_hist.append(actual_vel)
 - `scripts/compare_phase3_phase4_fair.py`
 - `scripts/analyze_phase4_jitter.py`
 
+### 10.20 训练 OOM 问题：导航场内存爆炸 (2025-12-05 修复)
+
+**症状**：
+Linux 工作站训练时 DataLoader worker 被 OOM Killer 杀死。
+
+**根因**：
+`TrajectorySlidingWindow.__init__` 中 `_load_nav_fields` 一次性加载 35 个导航场到内存：
+- 每个导航场: (2, 1365, 1435) float32 ≈ 15.7 MB
+- 35 个: 15.7 × 35 ≈ 550 MB
+
+配合 DataLoader 设置：
+- `num_workers=4` + `persistent_workers=True`
+- 每个 worker 进程复制整个 dataset（包括 550 MB 导航场）
+- 总内存: 550 MB × 5 (main + 4 workers) ≈ 2.75 GB 仅用于导航场
+
+**修复**：
+改为懒加载 + LRU 缓存：
+- 仅记录导航场路径，不立即加载
+- 首次访问时按需加载
+- LRU 缓存最多 8 个导航场（约 125 MB）
+
+**修改文件**：
+- `src/phase4/data/dataset.py`
+  - `_load_nav_fields`: 改为只记录路径和 sink IDs
+  - 新增 `_get_nav_field_lazy`: 懒加载 + LRU 缓存
+  - `_get_nav_direction`: 调用懒加载方法
+
+**内存改善**：
+| 场景 | 修改前 | 修改后 |
+|------|--------|--------|
+| 主进程 | 550 MB | ~0 MB (仅路径) |
+| 每个 worker | 550 MB | ~125 MB (缓存) |
+| 4 workers 总计 | 2.75 GB | ~500 MB |
+
 ---
 
 *最后更新: 2025-12-05*

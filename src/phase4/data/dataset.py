@@ -40,8 +40,9 @@ class TrajectorySlidingWindow(Dataset):
         self.stride = stride
         self.nav_field = nav_field  # 全局导航场（兼容旧版）
         
-        # 加载个体导航场
-        self.nav_fields: Dict[int, np.ndarray] = {}
+        # 懒加载个体导航场（初始化为空）
+        self.nav_fields_cache: Dict[int, np.ndarray] = {}  # LRU 缓存
+        self.nav_field_ids: set = set()
         self.has_individual_nav = False
         if nav_fields_dir is not None:
             self._load_nav_fields(Path(nav_fields_dir))
@@ -95,7 +96,15 @@ class TrajectorySlidingWindow(Dataset):
         self._fh = None
     
     def _load_nav_fields(self, nav_fields_dir: Path):
-        """加载所有个体导航场到内存"""
+        """
+        懒加载导航场：仅记录路径，按需加载
+        
+        修复 OOM 问题：之前一次性加载 35 个导航场约 550MB，
+        配合 num_workers=4 + persistent_workers=True，
+        每个 worker 都复制整个 dataset，导致内存爆炸。
+        
+        现在改为懒加载：首次访问时才加载，并使用 LRU 缓存控制内存。
+        """
         index_path = nav_fields_dir / "nav_fields_index.json"
         if not index_path.exists():
             print(f"Warning: nav_fields_index.json not found in {nav_fields_dir}")
@@ -104,16 +113,39 @@ class TrajectorySlidingWindow(Dataset):
         with open(index_path) as f:
             index = json.load(f)
         
-        print(f"Loading {index['num_sinks']} individual navigation fields...")
-        
-        for sink_id in index["sink_ids"]:
-            path = nav_fields_dir / f"nav_field_{sink_id:03d}.npz"
-            data = np.load(path)
-            # 存储为 (2, H, W) 格式
-            self.nav_fields[sink_id] = np.stack([data["nav_y"], data["nav_x"]], axis=0)
+        # 仅记录路径，不立即加载
+        self.nav_fields_dir = nav_fields_dir
+        self.nav_field_ids = set(index["sink_ids"])
+        self.nav_fields_cache: Dict[int, np.ndarray] = {}  # LRU 缓存
+        self.nav_cache_max_size = 8  # 最多缓存 8 个导航场（约 125 MB）
         
         self.has_individual_nav = True
-        print(f"  Loaded {len(self.nav_fields)} navigation fields")
+        print(f"  Lazy loading enabled for {index['num_sinks']} navigation fields "
+              f"(cache size: {self.nav_cache_max_size})")
+    
+    def _get_nav_field_lazy(self, sink_id: int) -> Optional[np.ndarray]:
+        """懒加载导航场，使用简单的 LRU 缓存"""
+        if sink_id in self.nav_fields_cache:
+            return self.nav_fields_cache[sink_id]
+        
+        if not hasattr(self, 'nav_fields_dir') or sink_id not in self.nav_field_ids:
+            return None
+        
+        # 加载
+        path = self.nav_fields_dir / f"nav_field_{sink_id:03d}.npz"
+        if not path.exists():
+            return None
+        
+        data = np.load(path)
+        nav = np.stack([data["nav_y"], data["nav_x"]], axis=0)
+        
+        # 简单 LRU：如果缓存满了，删除最早的
+        if len(self.nav_fields_cache) >= self.nav_cache_max_size:
+            oldest_key = next(iter(self.nav_fields_cache))
+            del self.nav_fields_cache[oldest_key]
+        
+        self.nav_fields_cache[sink_id] = nav
+        return nav
 
     def __len__(self):
         return self.total
@@ -130,13 +162,14 @@ class TrajectorySlidingWindow(Dataset):
             pos: (2,) 位置 [y, x]
             dest: 目的地 sink ID（如果有个体导航场）
         """
-        # 优先使用个体导航场
-        if self.has_individual_nav and dest is not None and dest in self.nav_fields:
-            nav = self.nav_fields[dest]
-            H, W = nav.shape[1], nav.shape[2]
-            y = int(np.clip(pos[0], 0, H - 1))
-            x = int(np.clip(pos[1], 0, W - 1))
-            return nav[:, y, x].astype(np.float32)
+        # 优先使用个体导航场（懒加载）
+        if self.has_individual_nav and dest is not None:
+            nav = self._get_nav_field_lazy(dest)
+            if nav is not None:
+                H, W = nav.shape[1], nav.shape[2]
+                y = int(np.clip(pos[0], 0, H - 1))
+                x = int(np.clip(pos[1], 0, W - 1))
+                return nav[:, y, x].astype(np.float32)
         
         # 回退到全局导航场
         if self.nav_field is not None:
