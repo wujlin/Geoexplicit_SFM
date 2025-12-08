@@ -253,6 +253,8 @@ class DiffusionPolicyTrainer:
         logger.info(f"DataLoader num_workers={num_workers}")
         
         # 创建 DataLoader
+        # 注意：persistent_workers=False 可以减少内存占用，但会稍慢
+        # 因为每个 epoch 结束后 workers 会被销毁并重建
         self.train_loader = DataLoader(
             train_dataset,
             batch_size=self.batch_size,
@@ -260,8 +262,8 @@ class DiffusionPolicyTrainer:
             num_workers=num_workers,
             pin_memory=True if self.device.type == "cuda" else False,
             drop_last=True,
-            persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=4 if num_workers > 0 else None,
+            persistent_workers=False,  # 每 epoch 后释放 worker 内存
+            prefetch_factor=2 if num_workers > 0 else None,  # 减少预取量
         )
         
         self.val_loader = DataLoader(
@@ -270,8 +272,8 @@ class DiffusionPolicyTrainer:
             shuffle=False,
             num_workers=num_workers,
             pin_memory=True if self.device.type == "cuda" else False,
-            persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=4 if num_workers > 0 else None,
+            persistent_workers=False,
+            prefetch_factor=2 if num_workers > 0 else None,
         )
     
     def _compute_normalization(self, dataset, sample_size: int = 10000):
